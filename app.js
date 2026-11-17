@@ -862,12 +862,42 @@
     return best;
   }
 
+  /* 一个区间用哪条线的几何：先看两端站各自线路，优先两端都在站序里的、截取点更多的 */
+  function chooseSegLine(aName, bName, p, q, idA, idB) {
+    var cand = [];
+    function add(x) { if (x && cand.indexOf(x) < 0) cand.push(x); }
+    [idA, idB].forEach(function (id) {
+      var parts = lnName(id).split('/');
+      parts.forEach(function (nm) {
+        add(RAIL && RAIL.l && RAIL.l[nm] ? nm : pickLine(id));
+      });
+      add(pickLine(id));
+    });
+    var best = null, bestScore = null;
+    cand.forEach(function (L) {
+      var geo = RAIL.l && RAIL.l[L];
+      if (!geo || !geo.g) return;
+      var pts = sliceLine(geo, p, q);
+      if (!pts || pts.length < 2) return;
+      var via = LST[L] || {}, seen = {};
+      via.forEach ? via.forEach(function (x) { seen[x[0]] = 1; }) : (function () {
+        for (var i = 0; i < via.length; i++) seen[via[i][0]] = 1;
+      })();
+      var both = (seen[aName] ? 1 : 0) + (seen[bName] ? 1 : 0);
+      var score = [both, pts.length];
+      var better = !bestScore || score[0] > bestScore[0] ||
+        (score[0] === bestScore[0] && score[1] > bestScore[1]);
+      if (better) { bestScore = score; best = { line: L, pts: pts }; }
+    });
+    return best;
+  }
+
   function trainSpec(no, tab) {
     var st = TR[no][tab], segs = [], names = [], stations = [], seen = {};
     for (var i = 0; i < st.length; i++) {
       var nm = stName(st[i][0]);
-      var ln = pickLine(st[i][1]);
-      var geo = RAIL.l && RAIL.l[ln];
+      var ln0 = pickLine(st[i][1]);
+      var geo = RAIL.l && RAIL.l[ln0];
       var p = (RAIL.s && RAIL.s[nm]) || null;
       if (p && !seen[nm]) {
         seen[nm] = 1;
@@ -881,7 +911,10 @@
       var nb = stName(st[i + 1][0]);
       var q = (RAIL.s && RAIL.s[nb]) || null;
       if (!p || !q) continue;
+      var ln = ln0;
       var pts = geo ? sliceLine(geo, p, q) : null;
+      var chosen = chooseSegLine(nm, nb, p, q, st[i][1], st[i + 1][1]);
+      if (chosen) { ln = chosen.line; pts = chosen.pts; }
       if (!pts) pts = [p, q];
       if (names.indexOf(ln) < 0) names.push(ln);
       var ea = timeAt(no, tab, i), eb = timeAt(no, tab, i + 1);
