@@ -1123,7 +1123,8 @@
   var VBW = 720, VBH = 620, mapRender = null, mapTimer = null, nowTimer = null, liveTimer = null, trainsTimer = null, hotLine = '';
 
   function drawRailMap(box, spec) {
-    var locatePos = null, initialView = null, prevPos = {}, prevAng = {};
+    var locatePos = spec.keep ? spec.keep.locatePos : null;
+    var initialView = null, prevPos = {}, prevAng = {};
     if (nowTimer && typeof clearInterval === 'function') { clearInterval(nowTimer); nowTimer = null; }
     if (trainsTimer && typeof clearInterval === 'function') { clearInterval(trainsTimer); trainsTimer = null; }
     var all = flatten(spec.paths);
@@ -1194,12 +1195,22 @@
       view.y = fy - view.h / 2;
     }
     initialView = { x: view.x, y: view.y, w: view.w, h: view.h };
+    if (spec.keep && spec.keep.view) {
+      view = { x: spec.keep.view.x, y: spec.keep.view.y, w: spec.keep.view.w, h: spec.keep.view.h };
+      var ux0 = Math.min(view.x, minx), uy0 = Math.min(view.y, miny);
+      var ux1 = Math.max(view.x + view.w, maxx), uy1 = Math.max(view.y + view.h, maxy);
+      var uw = ux1 - ux0, uh = uy1 - uy0, var0 = vw0 / vh0;
+      if (uw / uh > var0) uh = uw / var0;
+      else uw = uh * var0;
+      view = { x: (ux0 + ux1) / 2 - uw / 2, y: (uy0 + uy1) / 2 - uh / 2, w: uw, h: uh };
+    }
 
     box.innerHTML =
       '<div class="map-hd"><b>线路图</b><span>' +
       (spec.paths.length > 1 ? spec.paths.length + ' 段' : '') +
       '</span><span class="sp"></span>' +
       '<button type="button" class="map-zoom" data-z="-1" aria-label="缩小">−</button>' +
+      '<span class="map-zoom-level">1.0×</span>' +
       '<button type="button" class="map-zoom" data-z="1" aria-label="放大">+</button>' +
       '<button type="button" class="map-reset">复位</button></div>' +
       '<div class="mapwrap"><svg class="rmap" viewBox="0 0 ' + vw0.toFixed(0) + ' ' + vh0.toFixed(0) +
@@ -1208,7 +1219,8 @@
 
     var svg = box.querySelector('.rmap');
     var wrap = box.querySelector('.mapwrap');
-    var mapProject = null, nowMarker = null, nowLabel = null, trainLayer = null, mapTrainK = 4.5, mapTrainFs = 8.5, lastAngle = null, showTrains = true;
+    var mapProject = null, nowMarker = null, nowLabel = null, trainLayer = null, mapTrainK = 4.5, mapTrainFs = 8.5, lastAngle = null;
+    var showTrains = spec.keep ? spec.keep.showTrains : true;
 
     function render() {
       var cw = wrap.clientWidth || 380;
@@ -1218,6 +1230,12 @@
       var oy = (vh0 - view.h * scale) / 2 - view.y * scale;
       function X(p) { return p[1] * kx * scale + ox; }
       function Y(p) { return -p[0] * scale + oy; }
+
+      var zlEl = box.querySelector('.map-zoom-level');
+      if (zlEl && initialView && initialView.w > 0) {
+        var z = initialView.w / view.w;
+        zlEl.textContent = (z < 10 ? z.toFixed(1) : Math.round(z)) + '×';
+      }
 
       var mob = isMobile();
       var fs = (mob ? 13 : 11) * k, dotR = (mob ? 3.8 : 3.2) * k, halo = (mob ? 3.5 : 3) * k, lineW = 3;
@@ -1531,6 +1549,7 @@
 
     function updateTrains() {
       if (spec.getTrains) renderTrains();
+      if (spec.onTick) spec.onTick();
     }
 
     function startTrains() {
@@ -1599,6 +1618,13 @@
       nowLabel.innerHTML = esc(spec.no) + (spdText ? ' <tspan class="spd">' + spdText + '</tspan>' : '');
     }
 
+    box.__mapState = function () {
+      return {
+        view: { x: view.x, y: view.y, w: view.w, h: view.h },
+        locatePos: locatePos ? [locatePos[0], locatePos[1]] : null,
+        showTrains: showTrains
+      };
+    };
     mapRender = render;
     render();
 
@@ -1846,7 +1872,13 @@
     return { list: list, intervals: intervals.filter(function (iv) { return iv.trains.length > 0; }) };
   }
 
-  function fillStationMap(sid) {
+  function stationLineKey(data) {
+    var arr = [];
+    data.intervals.forEach(function (iv) { if (arr.indexOf(iv.line) < 0) arr.push(iv.line); });
+    return arr.sort().join('|');
+  }
+
+  function fillStationMap(sid, keep) {
     var box = out.querySelector('#mapcol');
     if (!box) return;
     if (!MAP_OPEN) { box.innerHTML = ''; return; }
@@ -1856,9 +1888,24 @@
       return;
     }
     var data = stationMapData(sid);
+    var key = stationLineKey(data);
     if (!data.intervals.length) {
+      var host0 = document.getElementById('out');
+      host0.__mapNo = {};
+      if (LIST_FILTER.maprun && host0.__listRender) host0.__listRender();
       box.innerHTML = '<div class="map-hd"><b>线路图</b></div>' +
         '<div class="map-skel">当前相邻区间没有运行中车次</div>';
+      if (trainsTimer) { clearInterval(trainsTimer); trainsTimer = null; }
+      if (S.kind === 'station' && MAP_OPEN && typeof setInterval === 'function') {
+        trainsTimer = setInterval(function () {
+          if (S.kind !== 'station' || !MAP_OPEN) {
+            if (trainsTimer) { clearInterval(trainsTimer); trainsTimer = null; }
+            return;
+          }
+          var nd = stationMapData(sid);
+          if (nd.intervals.length) fillStationMap(sid);
+        }, 1000);
+      }
       return;
     }
     var nm = ST[sid], p = RAIL.s && RAIL.s[nm];
@@ -1903,12 +1950,22 @@
       });
       return res;
     }
-    drawRailMap(box, {
+    var spec = {
       paths: paths, stations: stations, names: used, cols: cols,
       trains: trains, kind: 'station',
       focus: p ? { name: nm, lat: p[0], lon: p[1] } : null,
       getTrains: liveTrains
-    });
+    };
+    if (keep) spec.keep = keep;
+    spec.onTick = function () {
+      var nd = stationMapData(sid);
+      var nk = stationLineKey(nd);
+      if (nk === key) return;
+      var saved = box.__mapState && box.__mapState();
+      key = nk;
+      fillStationMap(sid, saved);
+    };
+    drawRailMap(box, spec);
   }
 
   function elecName(v) {
