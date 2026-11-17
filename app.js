@@ -41,7 +41,7 @@
   var S = { kind: 'empty' };
   var ST_INDEX = null;  // 站号 -> 车次[]，首次用到才建
   var BU_SET = null, BU_LIST = null;  // 担当 -> 车次[]，首次用到才建
-  var LIST_FILTER = { running: false, types: {} };
+  var LIST_FILTER = { running: false, maprun: false, types: {} };
   var LIST_KEY = '';
 
   /* ---------------- 工具 ---------------- */
@@ -763,7 +763,7 @@
       if (v === '0') return false;
       if (v === '1') return true;
     } catch (e) { /* noop */ }
-    return !isMobile();
+    return true;
   })();
 
   function loadRail(cb) {
@@ -1129,6 +1129,15 @@
     if (vw / vh > vw0 / vh0) vh = vw * vh0 / vw0;
     else vw = vh * vw0 / vh0;
     var view = { x: (minx + maxx) / 2 - vw / 2, y: (miny + maxy) / 2 - vh / 2, w: vw, h: vh };
+    if (isMobile()) {
+      var fx = spec.focus && RAIL.s ? spec.focus.lon * kx : view.x + view.w / 2;
+      var fy = spec.focus && RAIL.s ? -spec.focus.lat : view.y + view.h / 2;
+      view.w *= 0.7;
+      view.h *= 0.7;
+      view.x = fx - view.w / 2;
+      view.y = fy - view.h / 2;
+    }
+    initialView = { x: view.x, y: view.y, w: view.w, h: view.h };
 
     box.innerHTML =
       '<div class="map-hd"><b>线路图</b><span>' +
@@ -1144,6 +1153,7 @@
     var svg = box.querySelector('.rmap');
     var wrap = box.querySelector('.mapwrap');
     var mapProject = null, nowMarker = null, trainLayer = null, mapTrainK = 4.5, mapTrainFs = 8.5, lastAngle = null, showTrains = true;
+    var locatePos = null, initialView = null;
 
     function render() {
       var cw = wrap.clientWidth || 380;
@@ -1154,8 +1164,9 @@
       function X(p) { return p[1] * kx * scale + ox; }
       function Y(p) { return -p[0] * scale + oy; }
 
-      var fs = 11 * k, dotR = 3.2 * k, halo = 3 * k, lineW = 3;
-      var trainK = 4.5 * k, trainFs = 8.5 * k;
+      var mob = isMobile();
+      var fs = (mob ? 13 : 11) * k, dotR = (mob ? 3.8 : 3.2) * k, halo = (mob ? 3.5 : 3) * k, lineW = 3;
+      var trainK = (mob ? 5.6 : 4.5) * k, trainFs = (mob ? 11 : 8.5) * k;
       var html = '';
       var est = spec.kind === 'train' ? estimatedNow(spec) : null;
 
@@ -1170,7 +1181,10 @@
       if (spec.getTrains || spec.trains) {
         legend += '<label class="map-trains-lg"><input type="checkbox" class="mp-trains-toggle"' +
           (showTrains ? ' checked' : '') + '><i></i>运行中 <span class="mp-train-count">' +
-          ((spec.trains || []).length) + '</span></label>';
+          ((spec.trains || []).length) + '</span>' +
+          '<span class="mp-dir"><b class="down">下 0</b><b class="up">上 0</b></span>' +
+          '<span class="mp-updated">更新于 --:--:--</span></label>' +
+          '<button type="button" class="map-locate" data-locate title="显示我的位置">◎</button>';
       }
       box.querySelector('.map-lg').innerHTML = legend;
       var tg = box.querySelector('.mp-trains-toggle');
@@ -1184,6 +1198,19 @@
           } else {
             stopTrains();
           }
+        });
+      }
+      var locBtn = box.querySelector('[data-locate]');
+      if (locBtn) {
+        locBtn.addEventListener('click', function () {
+          if (!navigator.geolocation) { locBtn.textContent = '不可用'; return; }
+          locBtn.textContent = '定位中';
+          navigator.geolocation.getCurrentPosition(function (pos) {
+            locBtn.textContent = '◎';
+            showLocate(pos.coords.latitude, pos.coords.longitude);
+          }, function () {
+            locBtn.textContent = '定位失败';
+          }, { enableHighAccuracy: false, timeout: 10000, maximumAge: 60000 });
         });
       }
 
@@ -1293,7 +1320,21 @@
           (fs * 1.05).toFixed(1) + '" font-weight="700" fill="#111827" stroke="#fbfcfe" stroke-width="' +
           (halo * 1.2).toFixed(1) + '" paint-order="stroke">' + esc(spec.focus.name) + '</text></g>';
       }
-      svg.innerHTML = html + dots + labels + lineLabels + '<g class="mp-trains"></g>' + nowHtml + focusHtml;
+      var locateHtml = '';
+      if (locatePos) {
+        var lx = X([locatePos[0], locatePos[1]]), ly = Y([locatePos[0], locatePos[1]]);
+        var lr = 5.5 * k;
+        locateHtml = '<g class="mp-locate">' +
+          '<circle cx="' + lx.toFixed(1) + '" cy="' + ly.toFixed(1) + '" r="' + lr.toFixed(1) +
+          '" fill="#2563eb" stroke="#fff" stroke-width="' + (1.8 * k).toFixed(1) + '">' +
+          '<animate attributeName="r" values="' + lr.toFixed(1) + ';' + (lr * 2.6).toFixed(1) + ';' +
+          lr.toFixed(1) + '" dur="1.6s" repeatCount="indefinite"/>' +
+          '<animate attributeName="opacity" values="1;.15;1" dur="1.6s" repeatCount="indefinite"/>' +
+          '</circle><circle cx="' + lx.toFixed(1) + '" cy="' + ly.toFixed(1) + '" r="' +
+          (2 * k).toFixed(1) + '" fill="#fff"/></g>';
+      }
+      svg.innerHTML = html + dots + labels + lineLabels + '<g class="mp-trains"></g>' +
+        nowHtml + focusHtml + locateHtml;
       mapProject = function (lat, lon) { return [X([lat, lon]), Y([lat, lon])]; };
       nowMarker = svg.querySelector('.mp-now');
       trainLayer = svg.querySelector('.mp-trains');
@@ -1308,6 +1349,10 @@
       if (!trainLayer || !mapProject || !showTrains) return;
       var trains = spec.getTrains ? spec.getTrains() : (spec.trains || []);
       spec.trains = trains;
+      var host = document.getElementById('out');
+      host.__mapNo = {};
+      trains.forEach(function (t) { host.__mapNo[t.no] = 1; });
+      var down = 0, up = 0;
       var out = '', placed = [], i, j;
       var kUnit = mapTrainK / 4.5;
       for (i = 0; i < trains.length; i++) {
@@ -1316,6 +1361,10 @@
         if (!p) continue;
         var x = p[0], y = p[1], tri = mapTrainK;
         var ang = t.angle || 0;
+        var isUp = /[02468]$/.test(t.no);
+        var col = isUp ? '#2563eb' : '#16a34a';
+        var txtCol = isUp ? '#1d4ed8' : '#15803d';
+        if (isUp) up++; else down++;
         var fs = mapTrainFs, w = t.no.length * fs * 0.62 + 4, h = fs * 1.15;
         var cands = [
           [x - w / 2, y - tri * 1.8 - h, 'middle'],
@@ -1340,17 +1389,24 @@
           '<g class="mp-train" transform="translate(' + x.toFixed(1) + ',' + y.toFixed(1) +
           ') rotate(' + ang.toFixed(1) + ')">' +
           '<path d="M0,' + (-tri).toFixed(1) + ' L' + (tri * 0.8).toFixed(1) + ',' + tri.toFixed(1) +
-          ' L' + (-tri * 0.8).toFixed(1) + ',' + tri.toFixed(1) + ' Z" fill="#16a34a" stroke="#fff"' +
+          ' L' + (-tri * 0.8).toFixed(1) + ',' + tri.toFixed(1) + ' Z" fill="' + col + '" stroke="#fff"' +
           ' stroke-width="1.2" vector-effect="non-scaling-stroke" stroke-linejoin="round"></path>' +
           '<title>' + esc(t.no) + '</title></g>' +
           '<text x="' + pos[0].toFixed(1) + '" y="' + pos[1].toFixed(1) + '" text-anchor="' + pos[2] +
-          '" font-size="' + fs.toFixed(1) + '" fill="#15803d" font-weight="600" stroke="#fbfcfe"' +
+          '" font-size="' + fs.toFixed(1) + '" fill="' + txtCol + '" font-weight="600" stroke="#fbfcfe"' +
           ' stroke-width="' + (2.5 * kUnit).toFixed(1) + '" paint-order="stroke">' +
           esc(t.no) + '</text></a>';
       }
       trainLayer.innerHTML = out;
       var cnt = box.querySelector('.mp-train-count');
       if (cnt) cnt.textContent = trains.length;
+      var dEl = box.querySelector('.mp-dir .down');
+      if (dEl) dEl.textContent = '下 ' + down;
+      var uEl = box.querySelector('.mp-dir .up');
+      if (uEl) uEl.textContent = '上 ' + up;
+      var stamp = box.querySelector('.mp-updated');
+      if (stamp) stamp.textContent = '更新于 ' + new Date().toTimeString().slice(0, 8);
+      if (LIST_FILTER.maprun && host.__listRender) host.__listRender();
     }
 
     function updateTrains() {
@@ -1361,12 +1417,33 @@
       if (!spec.getTrains || typeof setInterval !== 'function') return;
       if (trainsTimer) { clearInterval(trainsTimer); trainsTimer = null; }
       if (!showTrains) return;
-      var ms = spec.kind === 'line' ? 30000 : 5000;
+      var ms = 1000;
       trainsTimer = setInterval(updateTrains, ms);
     }
 
     function stopTrains() {
       if (trainsTimer) { clearInterval(trainsTimer); trainsTimer = null; }
+    }
+
+    function showLocate(lat, lon) {
+      locatePos = [lat, lon];
+      var wx = lon * kx, wy = -lat;
+      var padX = view.w * 0.02, padY = view.h * 0.02;
+      if (wx < view.x + padX || wx > view.x + view.w - padX ||
+          wy < view.y + padY || wy > view.y + view.h - padY) {
+        var minx = Math.min(view.x, wx), maxx = Math.max(view.x + view.w, wx);
+        var miny = Math.min(view.y, wy), maxy = Math.max(view.y + view.h, wy);
+        var pad = Math.max(maxx - minx, maxy - miny) * 0.08 + 1e-4;
+        minx -= pad; maxx += pad; miny -= pad; maxy += pad;
+        var w = maxx - minx, h = maxy - miny, ar = vw0 / vh0;
+        if (w / h > ar) h = w / ar;
+        else w = h * ar;
+        view.x = (minx + maxx) / 2 - w / 2;
+        view.y = (miny + maxy) / 2 - h / 2;
+        view.w = w;
+        view.h = h;
+      }
+      render();
     }
 
     function updateNow() {
@@ -1406,7 +1483,8 @@
 
     var reset = box.querySelector('.map-reset');
     reset.addEventListener('click', function () {
-      view = { x: (minx + maxx) / 2 - vw / 2, y: (miny + maxy) / 2 - vh / 2, w: vw, h: vh };
+      view = { x: initialView.x, y: initialView.y, w: initialView.w, h: initialView.h };
+      locatePos = null;
       render();
     });
 
@@ -1762,6 +1840,9 @@
       if (nowTimer && typeof clearInterval === 'function') { clearInterval(nowTimer); nowTimer = null; }
       if (trainsTimer && typeof clearInterval === 'function') { clearInterval(trainsTimer); trainsTimer = null; }
       mapRender = null;
+      var host = document.getElementById('out');
+      host.__mapNo = {};
+      if (LIST_FILTER.maprun && host.__listRender) host.__listRender();
       var box = out.querySelector('#mapcol');
       if (box) box.innerHTML = '';
     }
@@ -2187,7 +2268,7 @@
   function ensureListFilter(key) {
     if (LIST_KEY !== key) {
       LIST_KEY = key;
-      LIST_FILTER = { running: false, types: {} };
+      LIST_FILTER = { running: false, maprun: false, types: {} };
     }
   }
 
@@ -2203,6 +2284,7 @@
     return list.filter(function (x) {
       var no = getNo(x);
       if (LIST_FILTER.running && !isRunning(no)) return false;
+      if (LIST_FILTER.maprun && !(out.__mapNo && out.__mapNo[no])) return false;
       if (anyType && !types[trainType(no)]) return false;
       return true;
     });
@@ -2212,7 +2294,9 @@
     var types = ['G', 'D', 'C', 'Z', 'T', 'K', 'S', '其他'];
     var h = '<div class="fbar">' +
       '<label class="fopt' + (LIST_FILTER.running ? ' on' : '') + '"><input type="checkbox" data-f="run"' +
-      (LIST_FILTER.running ? ' checked' : '') + '><span>运行中</span></label>';
+      (LIST_FILTER.running ? ' checked' : '') + '><span>运行中</span></label>' +
+      '<label class="fopt' + (LIST_FILTER.maprun ? ' on' : '') + '"><input type="checkbox" data-f="maprun"' +
+      (LIST_FILTER.maprun ? ' checked' : '') + '><span>运行中（当前线路图）</span></label>';
     types.forEach(function (t) {
       h += '<label class="fopt' + (LIST_FILTER.types[t] ? ' on' : '') + '"><input type="checkbox" data-f="' + t + '"' +
         (LIST_FILTER.types[t] ? ' checked' : '') + '><span>' + t + '</span></label>';
@@ -2577,6 +2661,7 @@
     var f = e.target.getAttribute && e.target.getAttribute('data-f');
     if (!f) return;
     if (f === 'run') LIST_FILTER.running = e.target.checked;
+    else if (f === 'maprun') LIST_FILTER.maprun = e.target.checked;
     else if (e.target.checked) LIST_FILTER.types[f] = 1;
     else delete LIST_FILTER.types[f];
     var lab = e.target.closest('.fopt');
