@@ -41,6 +41,8 @@
   var S = { kind: 'empty' };
   var ST_INDEX = null;  // 站号 -> 车次[]，首次用到才建
   var BU_SET = null, BU_LIST = null;  // 担当 -> 车次[]，首次用到才建
+  var LIST_FILTER = { running: false, types: {} };
+  var LIST_KEY = '';
 
   /* ---------------- 工具 ---------------- */
   function norm(s) { return String(s == null ? '' : s).toUpperCase().replace(/[\s\u3000]+/g, ''); }
@@ -384,7 +386,14 @@
     function addBu(name) { add('bu', name); }
 
     if (cn) {
-      st.list.slice(0, 4).forEach(addSt);
+      var sv = String(v).toLowerCase();
+      var stList = st.list.slice().sort(function (a, b) {
+        var na = ST[a].toLowerCase(), nb = ST[b].toLowerCase();
+        var ra = na === sv ? 0 : (na.indexOf(sv) === 0 ? 1 : 2);
+        var rb = nb === sv ? 0 : (nb.indexOf(sv) === 0 ? 1 : 2);
+        return ra - rb || ST[a].length - ST[b].length || a - b;
+      });
+      stList.slice(0, 8).forEach(addSt);
       ln.list.slice(0, 2).forEach(addLn);
       bu.list.slice(0, 2).forEach(addBu);
       t.list.slice(0, 6).forEach(addTr);
@@ -507,7 +516,14 @@
     if (kind === 'tn') return tnPop(arg);
     if (kind === 'ln') return lnPop(arg);
     if (kind === 'bu') return buPop(arg);
+    if (kind === 'tr') return trPop(arg);
     return '';
+  }
+
+  function trPop(no) {
+    if (!TR[no]) return '<div class="pp">没有这个车次。</div>';
+    return '<div class="pp"><ul class="res">' + resTrain(no) + '</ul>' +
+      '<div class="pl"><a href="#" data-k="' + esc(no) + '">打开车次页 →</a></div></div>';
   }
 
   function sameCity(code, self) {
@@ -1127,7 +1143,7 @@
 
     var svg = box.querySelector('.rmap');
     var wrap = box.querySelector('.mapwrap');
-    var mapProject = null, nowMarker = null, trainLayer = null, mapTrainK = 4.5, mapTrainFs = 8.5, lastAngle = null;
+    var mapProject = null, nowMarker = null, trainLayer = null, mapTrainK = 4.5, mapTrainFs = 8.5, lastAngle = null, showTrains = true;
 
     function render() {
       var cw = wrap.clientWidth || 380;
@@ -1152,10 +1168,24 @@
       if (est) legend += '<span class="map-now"><i></i>估算位置 <span class="mp-now-t">' + fmtNow(est.t) +
         '</span><span class="mp-now-s">' + esc(nowStatus(est)) + '</span></span>';
       if (spec.getTrains || spec.trains) {
-        legend += '<span class="map-trains-lg"><i></i>运行中 <span class="mp-train-count">' +
-          ((spec.trains || []).length) + '</span></span>';
+        legend += '<label class="map-trains-lg"><input type="checkbox" class="mp-trains-toggle"' +
+          (showTrains ? ' checked' : '') + '><i></i>运行中 <span class="mp-train-count">' +
+          ((spec.trains || []).length) + '</span></label>';
       }
       box.querySelector('.map-lg').innerHTML = legend;
+      var tg = box.querySelector('.mp-trains-toggle');
+      if (tg) {
+        tg.addEventListener('change', function () {
+          showTrains = tg.checked;
+          if (trainLayer) trainLayer.style.display = showTrains ? '' : 'none';
+          if (showTrains) {
+            renderTrains();
+            startTrains();
+          } else {
+            stopTrains();
+          }
+        });
+      }
 
       spec.paths.forEach(function (p) {
         if (p.pts.length < 2) return;
@@ -1195,7 +1225,7 @@
         }
         if (!pick && (s.first || s.last)) { pick = cand[0]; placed.push([cand[0][3], cand[0][4], w, h]); }
         if (pick) {
-          labels += '<text x="' + pick[0].toFixed(1) + '" y="' + pick[1].toFixed(1) +
+          labels += '<text class="mp-stl" data-pop="st:' + esc(s.name) + '" x="' + pick[0].toFixed(1) + '" y="' + pick[1].toFixed(1) +
             '" text-anchor="' + pick[2] + '" font-size="' + fs.toFixed(1) +
             '" fill="' + (s.first || s.last ? '#111827' : '#4b5563') +
             '" font-weight="' + (s.first || s.last ? '600' : '400') +
@@ -1256,7 +1286,7 @@
       var focusHtml = '';
       if (spec.focus) {
         var fx = X([spec.focus.lat, spec.focus.lon]), fy = Y([spec.focus.lat, spec.focus.lon]);
-        focusHtml = '<g class="mp-focus">' +
+        focusHtml = '<g class="mp-focus" data-pop="st:' + esc(spec.focus.name) + '">' +
           '<circle cx="' + fx.toFixed(1) + '" cy="' + fy.toFixed(1) + '" r="' + (4.5 * k).toFixed(1) +
           '" fill="#111827" stroke="#fff" stroke-width="' + (1.8 * k).toFixed(1) + '"/>' +
           '<text x="' + fx.toFixed(1) + '" y="' + (fy - 8 * k).toFixed(1) + '" text-anchor="middle" font-size="' +
@@ -1270,11 +1300,12 @@
       mapTrainK = trainK;
       mapTrainFs = trainFs;
       renderTrains();
+      if (trainLayer) trainLayer.style.display = showTrains ? '' : 'none';
       if (hotLine) paintHl(hotLine);
     }
 
     function renderTrains() {
-      if (!trainLayer || !mapProject) return;
+      if (!trainLayer || !mapProject || !showTrains) return;
       var trains = spec.getTrains ? spec.getTrains() : (spec.trains || []);
       spec.trains = trains;
       var out = '', placed = [], i, j;
@@ -1305,7 +1336,7 @@
         if (!pos) {
           pos = [x - w / 2, y - tri * 1.8 - h * (placed.length + 1), 'middle'];
         }
-        out += '<a href="#" data-k="' + esc(t.no) + '">' +
+        out += '<a href="#" data-pop="tr:' + esc(t.no) + '">' +
           '<g class="mp-train" transform="translate(' + x.toFixed(1) + ',' + y.toFixed(1) +
           ') rotate(' + ang.toFixed(1) + ')">' +
           '<path d="M0,' + (-tri).toFixed(1) + ' L' + (tri * 0.8).toFixed(1) + ',' + tri.toFixed(1) +
@@ -1324,6 +1355,18 @@
 
     function updateTrains() {
       if (spec.getTrains) renderTrains();
+    }
+
+    function startTrains() {
+      if (!spec.getTrains || typeof setInterval !== 'function') return;
+      if (trainsTimer) { clearInterval(trainsTimer); trainsTimer = null; }
+      if (!showTrains) return;
+      var ms = spec.kind === 'line' ? 30000 : 5000;
+      trainsTimer = setInterval(updateTrains, ms);
+    }
+
+    function stopTrains() {
+      if (trainsTimer) { clearInterval(trainsTimer); trainsTimer = null; }
     }
 
     function updateNow() {
@@ -1358,7 +1401,7 @@
       nowTimer = setInterval(updateNow, 1000);
     }
     if (spec.getTrains && typeof setInterval === 'function') {
-      trainsTimer = setInterval(updateTrains, 1000);
+      startTrains();
     }
 
     var reset = box.querySelector('.map-reset');
@@ -1383,6 +1426,9 @@
 
     var drag = null, moved = false;
     svg.addEventListener('pointerdown', function (e) {
+      var hit = e.target.closest &&
+        e.target.closest('.mp-train, .mp-st, .mp-stl, [data-pop]');
+      if (hit) return;
       drag = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y };
       moved = false;
       if (svg.setPointerCapture) svg.setPointerCapture(e.pointerId);
@@ -1728,6 +1774,7 @@
     if (trainsTimer) { clearInterval(trainsTimer); trainsTimer = null; }
     mapRender = null;
     hotLine = '';
+    out.__listRender = null;
     var r;
     if (S.kind === 'train') r = trainView();
     else if (S.kind === 'results') r = resultsView();
@@ -1740,10 +1787,36 @@
     return r;
   }
 
+  function liveRoute(no, tab) {
+    var live = liveSegment(no, tab);
+    if (!live) return '';
+    var st = TR[no] && TR[no][tab];
+    if (!st) return '';
+    var fromName = stName(st[live.from][0]);
+    var toName = stName(st[live.to][0]);
+    if (live.from !== live.to) {
+      return esc(fromName) + ' <i>→</i> <b class="mid">' + esc(pickLine(st[live.from][1])) +
+        '</b> <i>→</i> ' + esc(toName);
+    }
+    var prev = live.from > 0 ? pickLine(st[live.from - 1][1]) : '';
+    var next = live.from < st.length - 1 ? pickLine(st[live.from][1]) : '';
+    var parts = [];
+    if (prev) parts.push(esc(prev));
+    parts.push('<b class="mid">' + esc(toName) + '</b>');
+    if (next) parts.push(esc(next));
+    return parts.join(' <i>→</i> ');
+  }
+
+  function liveSpan(no, tab) {
+    var r = liveRoute(no, tab);
+    return r ? '<span class="lv"><span class="lvin">' + r + '</span></span>' : '';
+  }
+
   function resTrain(no, attrs) {
     var v = TR[no][0];
     return '<li><a href="#" data-k="' + esc(no) + '"' + (attrs || '') + '><b>' + runDot(no) + esc(no) + '</b>' +
       '<span class="rt">' + esc(stName(v[0][0])) + ' → ' + esc(stName(v[v.length - 1][0])) + '</span>' +
+      liveSpan(no, 0) +
       '<span class="rm">' + num(v[v.length - 1][2]) + ' km · ' + v.length + ' 站</span></a></li>';
   }
 
@@ -1795,36 +1868,59 @@
     return isRunning(no, tab) ? '<span class="run-dot" title="运行中"></span>' : '';
   }
 
+  var ARC_CACHE = {};
+  function intervalArc(line, aName, bName) {
+    var key = line + '|' + aName + '|' + bName;
+    if (ARC_CACHE[key] !== undefined) return ARC_CACHE[key];
+    var pts = lineIntervalPts(line, aName, bName);
+    var arc = pts && pts.length > 1 ? arcOfPts(pts) : null;
+    ARC_CACHE[key] = arc;
+    return arc;
+  }
+
   function trainPos(no, tab) {
     var live = liveSegment(no, tab);
     if (!live) return null;
     var st = TR[no] && TR[no][tab];
     if (!st || !RAIL || !RAIL.s) return null;
-    var a = RAIL.s[ST[st[live.from][0]]];
-    var b = RAIL.s[ST[st[live.to][0]]];
+    var fromName = stName(st[live.from][0]);
+    var toName = stName(st[live.to][0]);
+    var a = RAIL.s[fromName];
     if (!a) return null;
-    var lat, lon, p0, p1;
-    if (live.from === live.to || !b) {
+    var line = pickLine(st[live.from][1]);
+    var lat, lon, angle;
+    if (live.from !== live.to) {
+      var arc = intervalArc(line, fromName, toName);
+      var f = Math.max(0, Math.min(1, live.f || 0));
+      if (arc) {
+        var p = pointAtArc(arc, f);
+        lat = p[0];
+        lon = p[1];
+        angle = angleAtArc(arc, f);
+      } else {
+        var b = RAIL.s[toName];
+        if (b) {
+          lat = a[0] + (b[0] - a[0]) * f;
+          lon = a[1] + (b[1] - a[1]) * f;
+          angle = dirAngle(a, b);
+        } else {
+          lat = a[0];
+          lon = a[1];
+          angle = 0;
+        }
+      }
+    } else {
       lat = a[0];
       lon = a[1];
-      p0 = a;
-      var ni = live.from + 1 < st.length ? RAIL.s[ST[st[live.from + 1][0]]] : null;
-      var pi = live.from > 0 ? RAIL.s[ST[st[live.from - 1][0]]] : null;
-      p1 = ni || pi || a;
-    } else {
-      var f = live.f || 0;
-      lat = a[0] + (b[0] - a[0]) * f;
-      lon = a[1] + (b[1] - a[1]) * f;
-      p0 = a;
-      p1 = b;
+      var ni = live.from + 1 < st.length ? stName(st[live.from + 1][0]) : null;
+      var pi = live.from > 0 ? stName(st[live.from - 1][0]) : null;
+      var nArc = ni ? intervalArc(line, fromName, ni) : null;
+      var pArc = pi ? intervalArc(line, pi, fromName) : null;
+      angle = nArc ? angleAtArc(nArc, 0) : (pArc ? angleAtArc(pArc, 1) : 0);
     }
-    var kx = Math.cos(lat * Math.PI / 180);
-    var sx = (p1[1] - p0[1]) * kx;
-    var sy = -(p1[0] - p0[0]);
-    var angle = (sx || sy) ? Math.atan2(sx, -sy) * 180 / Math.PI : 0;
     return {
-      no: no, lat: lat, lon: lon, angle: angle, line: pickLine(st[live.from][1]),
-      fromName: stName(st[live.from][0]), toName: stName(st[live.to][0])
+      no: no, lat: lat, lon: lon, angle: angle, line: line,
+      fromName: fromName, toName: toName
     };
   }
 
@@ -2088,11 +2184,82 @@
     document.title = raw + ' · 列车经由查询';
   }
 
+  function ensureListFilter(key) {
+    if (LIST_KEY !== key) {
+      LIST_KEY = key;
+      LIST_FILTER = { running: false, types: {} };
+    }
+  }
+
+  function trainType(no) {
+    var c = String(no).charAt(0).toUpperCase();
+    return 'GD CZ T K S'.indexOf(c) >= 0 ? c : '其他';
+  }
+
+  function filterList(list, getNo) {
+    getNo = getNo || function (x) { return x; };
+    var types = LIST_FILTER.types, anyType = false;
+    for (var t in types) { if (types[t]) { anyType = true; break; } }
+    return list.filter(function (x) {
+      var no = getNo(x);
+      if (LIST_FILTER.running && !isRunning(no)) return false;
+      if (anyType && !types[trainType(no)]) return false;
+      return true;
+    });
+  }
+
+  function filterBar() {
+    var types = ['G', 'D', 'C', 'Z', 'T', 'K', 'S', '其他'];
+    var h = '<div class="fbar">' +
+      '<label class="fopt' + (LIST_FILTER.running ? ' on' : '') + '"><input type="checkbox" data-f="run"' +
+      (LIST_FILTER.running ? ' checked' : '') + '><span>运行中</span></label>';
+    types.forEach(function (t) {
+      h += '<label class="fopt' + (LIST_FILTER.types[t] ? ' on' : '') + '"><input type="checkbox" data-f="' + t + '"' +
+        (LIST_FILTER.types[t] ? ' checked' : '') + '><span>' + t + '</span></label>';
+    });
+    return h + '</div>';
+  }
+
+  function stationListHtml(list, sid) {
+    var filtered = filterList(list);
+    if (!filtered.length) return '<div class="err">没有符合筛选条件的车次。</div>';
+    var h = '<ul class="res">' + filtered.slice(0, MAX_LIST).map(function (no) {
+      var info = atStation(no, sid);
+      var e = timeAt(no, info.vi, info.k);
+      return '<li><a href="#" data-k="' + esc(no) + '" data-hl="' + sid + '"><b>' + runDot(no) + esc(no) + '</b>' +
+        '<span class="rt">' + esc(stName(info.from)) + ' → ' + esc(stName(info.to)) + '</span>' +
+        liveSpan(no, info.vi) +
+        (e ? '<span class="tm">' + fmtT(e[1]) + ' / ' + fmtT(e[2]) + '</span>' : '') +
+        '<span class="rm">第 ' + (info.k + 1) + ' 站 · ' + num(info.km) + ' km</span></a></li>';
+    }).join('') + '</ul>';
+    if (filtered.length > MAX_LIST) {
+      h += '<div class="more">仅显示前 ' + MAX_LIST + ' 条，共 ' + num(filtered.length) + ' 条</div>';
+    }
+    return h;
+  }
+
+  function lineListHtml(list) {
+    var filtered = filterList(list, function (x) { return x.no; });
+    if (!filtered.length) return '<div class="err">没有符合筛选条件的车次。</div>';
+    var h = '<ul class="res">' + filtered.slice(0, MAX_LIST).map(function (x) {
+      var v = TR[x.no][0];
+      return '<li><a href="#" data-k="' + esc(x.no) + '"><b>' + runDot(x.no) + esc(x.no) + '</b>' +
+        '<span class="rt">' + esc(stName(v[0][0])) + ' → ' + esc(stName(v[v.length - 1][0])) + '</span>' +
+        liveSpan(x.no, 0) +
+        '<span class="rm">经 ' + x.n + ' 站</span></a></li>';
+    }).join('') + '</ul>';
+    if (filtered.length > MAX_LIST) {
+      h += '<div class="more">仅显示前 ' + MAX_LIST + ' 条，共 ' + num(filtered.length) + ' 条</div>';
+    }
+    return h;
+  }
+
   function stationView() {
     var sid = S.st, name = ST[sid];
     var idx = ensureIndex();
     var list = (idx[sid] || []).slice().sort(cmp);
     var m = META && META.stations && META.stations[name];
+    ensureListFilter('st:' + sid);
 
     var head = '<div class="head">' +
       '<span class="no sm">车站</span><span class="route">' + stLink(sid) + '</span>' +
@@ -2104,18 +2271,18 @@
     var body = '';
     if (!list.length) {
       body += '<div class="err">没有车次途经该站。</div>';
+      out.__listRender = null;
     } else {
-      body += '<ul class="res">' + list.slice(0, MAX_LIST).map(function (no) {
-        var info = atStation(no, sid);
-        var e = timeAt(no, info.vi, info.k);
-        return '<li><a href="#" data-k="' + esc(no) + '" data-hl="' + sid + '"><b>' + runDot(no) + esc(no) + '</b>' +
-          '<span class="rt">' + esc(stName(info.from)) + ' → ' + esc(stName(info.to)) + '</span>' +
-          (e ? '<span class="tm">' + fmtT(e[1]) + ' / ' + fmtT(e[2]) + '</span>' : '') +
-          '<span class="rm">第 ' + (info.k + 1) + ' 站 · ' + num(info.km) + ' km</span></a></li>';
-      }).join('') + '</ul>';
-      if (list.length > MAX_LIST) {
-        body += '<div class="more">仅显示前 ' + MAX_LIST + ' 条，共 ' + num(list.length) + ' 条</div>';
-      }
+      body += '<div class="listbar"><div class="grp">途经车次<span class="cnt" id="lcnt">' +
+        num(list.length) + '</span></div>' + filterBar() + '</div>' +
+        '<div id="trainlist">' + stationListHtml(list, sid) + '</div>';
+      out.__listRender = function () {
+        var filtered = filterList(list);
+        var tl = out.querySelector('#trainlist');
+        if (tl) tl.innerHTML = stationListHtml(list, sid);
+        var c = out.querySelector('#lcnt');
+        if (c) c.textContent = num(filtered.length);
+      };
     }
 
     out.innerHTML = '<section class="card' + (MAP_OPEN ? '' : ' mapoff') + '">' + head +
@@ -2164,6 +2331,7 @@
         var v = TR[no][0];
         return '<li><a href="#" data-k="' + esc(no) + '"><b>' + runDot(no) + esc(no) + '</b>' +
           '<span class="rt">' + esc(stName(v[0][0])) + ' → ' + esc(stName(v[v.length - 1][0])) + '</span>' +
+          liveSpan(no, 0) +
           '<span class="rm">' + v.length + ' 站 · ' + num(v[v.length - 1][2]) + ' km</span></a></li>';
       }).join('') + '</ul>';
       if (list.length > MAX_LIST) {
@@ -2180,6 +2348,7 @@
     var via = LST[name] || null;
     var parts = name.split('/');
     var km = via && via.length ? via[via.length - 1][1] - via[0][1] : 0;
+    ensureListFilter('ln:' + name);
 
     var html = '<section class="card' + (MAP_OPEN ? '' : ' mapoff') + '"><div class="head">' +
       '<span class="no sm">线路</span><span class="route">' + esc(name) + '</span>' +
@@ -2212,17 +2381,18 @@
 
     if (!list.length) {
       body += '<div class="err">没有车次经由此线路。</div>';
+      out.__listRender = null;
     } else {
-      body += '<div class="grp">经停车次<span class="cnt">' + num(list.length) + '</span></div>' +
-        '<ul class="res">' + list.slice(0, MAX_LIST).map(function (x) {
-          var v = TR[x.no][0];
-          return '<li><a href="#" data-k="' + esc(x.no) + '"><b>' + runDot(x.no) + esc(x.no) + '</b>' +
-            '<span class="rt">' + esc(stName(v[0][0])) + ' → ' + esc(stName(v[v.length - 1][0])) + '</span>' +
-            '<span class="rm">经 ' + x.n + ' 站</span></a></li>';
-        }).join('') + '</ul>';
-      if (list.length > MAX_LIST) {
-        body += '<div class="more">仅显示前 ' + MAX_LIST + ' 条，共 ' + num(list.length) + ' 条</div>';
-      }
+      body += '<div class="listbar"><div class="grp">经停车次<span class="cnt" id="lcnt">' +
+        num(list.length) + '</span></div>' + filterBar() + '</div>' +
+        '<div id="trainlist">' + lineListHtml(list) + '</div>';
+      out.__listRender = function () {
+        var filtered = filterList(list, function (x) { return x.no; });
+        var tl = out.querySelector('#trainlist');
+        if (tl) tl.innerHTML = lineListHtml(list);
+        var c = out.querySelector('#lcnt');
+        if (c) c.textContent = num(filtered.length);
+      };
     }
 
     out.innerHTML = html + '<div class="cols"><div class="colmain">' + body + '</div>' +
@@ -2258,6 +2428,7 @@
         return '<li><a href="#" data-k="' + esc(x.no) + '" data-pf="' + aId + '" data-pt="' + bId + '">' +
           '<b>' + runDot(x.no) + esc(x.no) + '</b>' +
           '<span class="rt">' + esc(an) + ' → ' + esc(bn) + '</span>' +
+          liveSpan(x.no, x.vi) +
           (tt ? '<span class="tm">' + tt + '</span>' : '') +
           '<span class="rm">区间 ' + num(x.km) + ' km · ' + x.n + ' 站</span></a></li>';
       }).join('') + '</ul>';
@@ -2400,6 +2571,17 @@
     }
     var g = a.getAttribute('data-go');
     if (g != null) { e.preventDefault(); go(g); }
+  });
+
+  out.addEventListener('change', function (e) {
+    var f = e.target.getAttribute && e.target.getAttribute('data-f');
+    if (!f) return;
+    if (f === 'run') LIST_FILTER.running = e.target.checked;
+    else if (e.target.checked) LIST_FILTER.types[f] = 1;
+    else delete LIST_FILTER.types[f];
+    var lab = e.target.closest('.fopt');
+    if (lab) lab.classList.toggle('on', e.target.checked);
+    if (out.__listRender) out.__listRender();
   });
 
   document.addEventListener('click', function (e) {
