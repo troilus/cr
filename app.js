@@ -928,7 +928,9 @@
       cols: cols,
       segs: segs,
       timed: timed,
-      st: st
+      st: st,
+      no: no,
+      tab: tab
     };
   }
 
@@ -997,6 +999,11 @@
     return Math.atan2(dx, -dy) * 180 / Math.PI;
   }
 
+  function stationAngle(aName, bName) {
+    var a = RAIL && RAIL.s && RAIL.s[aName], b = RAIL && RAIL.s && RAIL.s[bName];
+    return (a && b) ? dirAngle(a, b) : null;
+  }
+
   function angleAtArc(arc, f) {
     if (!arc || arc.pts.length < 2) return 0;
     var target = Math.max(0, Math.min(1, f)) * arc.total, i = 1;
@@ -1029,9 +1036,10 @@
         var seg = kmSegment(st, km);
         var fromName = seg ? stName(st[seg.from][0]) : s.fromName;
         var toName = seg ? stName(st[seg.to][0]) : s.toName;
+        var segAngle = stationAngle(fromName, toName);
         return p ? {
           lat: p[0], lon: p[1], t: t,
-          angle: angleAtArc(arc, f),
+          angle: segAngle == null ? angleAtArc(arc, f) : segAngle,
           fromName: fromName, toName: toName,
           dwell: false, atStation: seg ? seg.at : false
         } : null;
@@ -1040,7 +1048,8 @@
         var n = spec.timed[i + 1];
         if (n.dep != null && t < n.dep) {
           var q = s.pts[s.pts.length - 1];
-          var nAng = n.pts && n.pts.length > 1 ? angleAtArc(arcOfPts(n.pts), 0) : angleAtArc(arcOfPts(s.pts), 1);
+          var nAng = stationAngle(n.fromName || s.toName, n.toName);
+          if (nAng == null) nAng = n.pts && n.pts.length > 1 ? angleAtArc(arcOfPts(n.pts), 0) : angleAtArc(arcOfPts(s.pts), 1);
           return q ? {
             lat: q[0], lon: q[1], t: t, angle: nAng,
             fromName: s.toName, toName: s.toName, dwell: true, nextDep: n.dep
@@ -1081,7 +1090,7 @@
   var VBW = 720, VBH = 620, mapRender = null, mapTimer = null, nowTimer = null, liveTimer = null, trainsTimer = null, hotLine = '';
 
   function drawRailMap(box, spec) {
-    var locatePos = null, initialView = null, prevPos = {};
+    var locatePos = null, initialView = null, prevPos = {}, prevAng = {};
     if (nowTimer && typeof clearInterval === 'function') { clearInterval(nowTimer); nowTimer = null; }
     if (trainsTimer && typeof clearInterval === 'function') { clearInterval(trainsTimer); trainsTimer = null; }
     var all = flatten(spec.paths);
@@ -1133,10 +1142,21 @@
     else vw = vh * vw0 / vh0;
     var view = { x: (minx + maxx) / 2 - vw / 2, y: (miny + maxy) / 2 - vh / 2, w: vw, h: vh };
     if (isMobile()) {
-      var fx = spec.focus && RAIL.s ? spec.focus.lon * kx : view.x + view.w / 2;
-      var fy = spec.focus && RAIL.s ? -spec.focus.lat : view.y + view.h / 2;
-      view.w *= 0.65;
-      view.h *= 0.65;
+      var fx = null, fy = null, zoom = 0.65;
+      if (spec.kind === 'train') {
+        var est0 = estimatedNow(spec);
+        if (est0) {
+          fx = est0.lon * kx;
+          fy = -est0.lat;
+          zoom = 0.4;
+        }
+      }
+      if (fx == null) {
+        fx = spec.focus && RAIL.s ? spec.focus.lon * kx : view.x + view.w / 2;
+        fy = spec.focus && RAIL.s ? -spec.focus.lat : view.y + view.h / 2;
+      }
+      view.w *= zoom;
+      view.h *= zoom;
       view.x = fx - view.w / 2;
       view.y = fy - view.h / 2;
     }
@@ -1155,7 +1175,7 @@
 
     var svg = box.querySelector('.rmap');
     var wrap = box.querySelector('.mapwrap');
-    var mapProject = null, nowMarker = null, trainLayer = null, mapTrainK = 4.5, mapTrainFs = 8.5, lastAngle = null, showTrains = true;
+    var mapProject = null, nowMarker = null, nowLabel = null, trainLayer = null, mapTrainK = 4.5, mapTrainFs = 8.5, lastAngle = null, showTrains = true;
 
     function render() {
       var cw = wrap.clientWidth || 380;
@@ -1178,13 +1198,10 @@
         legend += '<a href="#" data-go="' + esc(n) + '" data-hl="' + esc(n) + '"><i style="background:' +
           (spec.cols[n] || lineColor(n)) + '"></i>' + esc(n) + '</a>';
       });
-      if (est) legend += '<span class="map-now"><i></i>估算位置 <span class="mp-now-t">' + fmtNow(est.t) +
-        '</span><span class="mp-now-s">' + esc(nowStatus(est)) + '</span></span>';
       if (spec.getTrains || spec.trains) {
         legend += '<label class="map-trains-lg"><input type="checkbox" class="mp-trains-toggle"' +
           (showTrains ? ' checked' : '') + '><i></i>运行中 <span class="mp-train-count">' +
-          ((spec.trains || []).length) + '</span>' +
-          '<span class="mp-dir"><b class="down">下 0</b><b class="up">上 0</b></span></label>' +
+          ((spec.trains || []).length) + '</span></label>' +
           '<button type="button" class="map-locate" data-locate title="显示我的位置">◎</button>';
       }
       box.querySelector('.map-lg').innerHTML = legend;
@@ -1302,14 +1319,24 @@
       var nowHtml = '';
       if (est) {
         var ex = X([est.lat, est.lon]), ey = Y([est.lat, est.lon]);
-        var tri = 7 * k, ang0 = est.angle || 0;
+        var tri = trainK, ang0 = est.angle || 0;
         lastAngle = ang0;
-        nowHtml = '<g class="mp-now" style="transform:translate(' + ex.toFixed(1) + 'px,' + ey.toFixed(1) + 'px) rotate(' + ang0.toFixed(1) + 'deg)">' +
-          '<path d="M0,' + (-tri * 1.1).toFixed(1) + ' L' + tri.toFixed(1) + ',' + (tri * 0.85).toFixed(1) +
-          ' L' + (-tri).toFixed(1) + ',' + (tri * 0.85).toFixed(1) + ' Z" fill="#16a34a" stroke="#fff"' +
-          ' stroke-width="1.6" vector-effect="non-scaling-stroke" stroke-linejoin="round">' +
+        var spd = liveSpeed(spec.no, spec.tab);
+        var noTxt = esc(spec.no) + (spd == null ? '' : ' <tspan class="spd">' + spd + '</tspan>');
+        var fsNow = trainFs;
+        var lyNow = ey - tri * 1.8 - fsNow * 1.15;
+        nowHtml = '<g class="mp-now">' +
+          '<g class="mp-now-tri" style="transform:translate(' + ex.toFixed(1) + 'px,' + ey.toFixed(1) +
+          'px) rotate(' + ang0.toFixed(1) + 'deg)">' +
+          '<path d="M0,' + (-tri).toFixed(1) + ' L' + (tri * 0.8).toFixed(1) + ',' + tri.toFixed(1) +
+          ' L' + (-tri * 0.8).toFixed(1) + ',' + tri.toFixed(1) + ' Z" fill="#16a34a" stroke="#fff"' +
+          ' stroke-width="1.2" vector-effect="non-scaling-stroke" stroke-linejoin="round">' +
           '<animate attributeName="opacity" values="1;.55;1" dur="1.4s" repeatCount="indefinite"/>' +
-          '</path></g>';
+          '</path></g>' +
+          '<text class="mp-now-label" x="' + ex.toFixed(1) + '" y="' + lyNow.toFixed(1) +
+          '" text-anchor="middle" font-size="' + fsNow.toFixed(1) + '" fill="#15803d" font-weight="600"' +
+          ' stroke="#fbfcfe" stroke-width="' + (2.5 * (trainK / 4.5)).toFixed(1) +
+          '" paint-order="stroke">' + noTxt + '</text></g>';
       }
       var focusHtml = '';
       if (spec.focus) {
@@ -1337,9 +1364,11 @@
       svg.innerHTML = html + dots + labels + lineLabels + '<g class="mp-trains"></g>' +
         nowHtml + focusHtml + locateHtml;
       mapProject = function (lat, lon) { return [X([lat, lon]), Y([lat, lon])]; };
-      nowMarker = svg.querySelector('.mp-now');
+      nowMarker = svg.querySelector('.mp-now-tri');
+      nowLabel = svg.querySelector('.mp-now-label');
       trainLayer = svg.querySelector('.mp-trains');
       prevPos = {};
+      prevAng = {};
       mapTrainK = trainK;
       mapTrainFs = trainFs;
       renderTrains();
@@ -1354,7 +1383,6 @@
       var host = document.getElementById('out');
       host.__mapNo = {};
       trains.forEach(function (t) { host.__mapNo[t.no] = 1; });
-      var down = 0, up = 0;
       var placed = [], i, j;
       var kUnit = mapTrainK / 4.5;
       var existing = {};
@@ -1368,10 +1396,15 @@
         if (!p) continue;
         var x = p[0], y = p[1], tri = mapTrainK;
         var ang = t.angle || 0;
+        var oldAng = prevAng[t.no];
+        if (oldAng != null) {
+          while (ang - oldAng > 180) ang -= 360;
+          while (ang - oldAng < -180) ang += 360;
+        }
+        prevAng[t.no] = ang;
         var isUp = /[02468]$/.test(t.no);
         var col = isUp ? '#2563eb' : '#16a34a';
         var txtCol = isUp ? '#1d4ed8' : '#15803d';
-        if (isUp) up++; else down++;
         var spd = liveSpeed(t.no);
         var label = t.no + (spd == null ? '' : ' ' + spd);
         var fs = mapTrainFs, w = label.length * fs * 0.62 + 4, h = fs * 1.15;
@@ -1438,10 +1471,6 @@
       });
       var cnt = box.querySelector('.mp-train-count');
       if (cnt) cnt.textContent = trains.length;
-      var dEl = box.querySelector('.mp-dir .down');
-      if (dEl) dEl.textContent = '下 ' + down;
-      var uEl = box.querySelector('.mp-dir .up');
-      if (uEl) uEl.textContent = '上 ' + up;
       if (LIST_FILTER.maprun && host.__listRender) host.__listRender();
     }
 
@@ -1493,13 +1522,13 @@
     function updateNow() {
       var est = estimatedNow(spec);
       if (!est) {
-        if (nowMarker && nowMarker.parentNode) nowMarker.parentNode.removeChild(nowMarker);
+        var wrapEl = box.querySelector('.mp-now');
+        if (wrapEl && wrapEl.parentNode) wrapEl.parentNode.removeChild(wrapEl);
         nowMarker = null;
-        var item = box.querySelector('.map-now');
-        if (item && item.parentNode) item.parentNode.removeChild(item);
+        nowLabel = null;
         return;
       }
-      if (!nowMarker || !mapProject) { render(); return; }
+      if (!nowMarker || !nowLabel || !mapProject) { render(); return; }
       var p = mapProject(est.lat, est.lon);
       var ang = est.angle || 0;
       if (lastAngle != null) {
@@ -1508,10 +1537,10 @@
       }
       lastAngle = ang;
       nowMarker.style.transform = 'translate(' + p[0].toFixed(1) + 'px,' + p[1].toFixed(1) + 'px) rotate(' + ang.toFixed(1) + 'deg)';
-      var tEl = box.querySelector('.mp-now-t');
-      if (tEl) tEl.textContent = fmtNow(est.t);
-      var sEl = box.querySelector('.mp-now-s');
-      if (sEl) sEl.textContent = nowStatus(est);
+      var spd = liveSpeed(spec.no, spec.tab);
+      nowLabel.setAttribute('x', p[0].toFixed(1));
+      nowLabel.setAttribute('y', (p[1] - mapTrainK * 1.8 - mapTrainFs * 1.15).toFixed(1));
+      nowLabel.innerHTML = esc(spec.no) + (spd == null ? '' : ' <tspan class="spd">' + spd + '</tspan>');
     }
 
     mapRender = render;
@@ -1536,7 +1565,7 @@
       b.addEventListener('click', function () {
         var f = +b.getAttribute('data-z') > 0 ? 0.7 : 1.43;
         var cx = view.x + view.w / 2, cy = view.y + view.h / 2;
-        var nw = Math.max(vw * 0.02, Math.min(vw * 2, view.w * f));
+        var nw = Math.max(1e-6, view.w * f);
         var nh = nw * view.h / view.w;
         view.x = cx - nw / 2;
         view.y = cy - nh / 2;
@@ -1582,7 +1611,7 @@
       var wx = view.x + (sx * vw0 - (vw0 - view.w * scale) / 2) / scale;
       var wy = view.y + (sy * vh0 - (vh0 - view.h * scale) / 2) / scale;
       var f = Math.exp(e.deltaY * 0.0012);
-      var nw = Math.max(vw * 0.02, Math.min(vw * 2, view.w * f));
+      var nw = Math.max(1e-6, view.w * f);
       var nh = nw * view.h / view.w;
       view.x = wx - sx * nw;
       view.y = wy - sy * nh;
@@ -2050,7 +2079,8 @@
         var p = pointAtArc(arc, f);
         lat = p[0];
         lon = p[1];
-        angle = angleAtArc(arc, f);
+        angle = stationAngle(fromName, toName);
+        if (angle == null) angle = angleAtArc(arc, f);
       } else {
         var b = RAIL.s[toName];
         if (b) {
@@ -2068,9 +2098,13 @@
       lon = a[1];
       var ni = live.from + 1 < st.length ? stName(st[live.from + 1][0]) : null;
       var pi = live.from > 0 ? stName(st[live.from - 1][0]) : null;
-      var nArc = ni ? intervalArc(line, fromName, ni) : null;
-      var pArc = pi ? intervalArc(line, pi, fromName) : null;
-      angle = nArc ? angleAtArc(nArc, 0) : (pArc ? angleAtArc(pArc, 1) : 0);
+      angle = ni ? stationAngle(fromName, ni) : null;
+      if (angle == null) angle = pi ? stationAngle(pi, fromName) : 0;
+      if (angle == 0 && !ni && !pi) {
+        var nArc = ni ? intervalArc(line, fromName, ni) : null;
+        var pArc = pi ? intervalArc(line, pi, fromName) : null;
+        angle = nArc ? angleAtArc(nArc, 0) : (pArc ? angleAtArc(pArc, 1) : 0);
+      }
     }
     return {
       no: no, lat: lat, lon: lon, angle: angle, line: line,

@@ -351,9 +351,6 @@
   .map-lg .map-now .mp-now-s{font-weight:400;color:#4b5563}
   .map-lg .map-trains-lg{display:inline-flex;align-items:center;gap:5px;color:#15803d;font-weight:600;cursor:pointer;user-select:none}
   .map-lg .map-trains-lg input{width:13px;height:13px;margin:0;flex:none;accent-color:#16a34a;cursor:pointer}
-  .map-lg .map-trains-lg .mp-dir{display:inline-flex;gap:8px;font-weight:500}
-  .map-lg .map-trains-lg .mp-dir .down{color:#16a34a;font-weight:600}
-  .map-lg .map-trains-lg .mp-dir .up{color:#2563eb;font-weight:600}
   .map-lg .map-locate{
     font:inherit;font-size:14px;line-height:1;width:22px;height:20px;padding:0;
     border:1px solid var(--line);border-radius:6px;background:#fff;color:#2563eb;cursor:pointer;
@@ -384,7 +381,8 @@
   .rmap path.mp-ln{transition:opacity .12s,stroke-width .12s}
   .rmap path.mp-ln.dim{opacity:.14}
   .rmap path.mp-ln.hot{opacity:1;stroke-width:6}
-  .rmap .mp-now{transition:transform .9s linear;will-change:transform}
+  .rmap .mp-now-tri{transition:transform 1s linear;will-change:transform}
+  .rmap .mp-now-label .spd{opacity:.72;font-size:.88em;font-weight:500}
   .map-note{margin-top:6px;font-size:11px;line-height:1.6;color:#9aa1ab}
   .map-note b{color:var(--warn);font-weight:500}
   .map-skel{padding:44px 0;text-align:center;font-size:12px;color:var(--muted)}
