@@ -211,15 +211,18 @@
   tbody tr.live-b .st::after{content:"下一站"}
   tbody tr.live .st::after{content:"当前"}
 
-  /* 运行中车次前的绿点 */
+  /* 运行中车次前的绿三角 */
   .run-dot{
-    display:inline-block;width:7px;height:7px;border-radius:50%;
-    background:#16a34a;margin-right:5px;vertical-align:1px;
+    display:inline-block;width:0;height:0;
+    border-left:6px solid #16a34a;
+    border-top:4px solid transparent;
+    border-bottom:4px solid transparent;
+    margin-right:5px;vertical-align:1px;
     animation:runblink 1.2s ease-out infinite;
   }
   @keyframes runblink{
-    0%,100%{opacity:1;box-shadow:0 0 0 0 rgba(22,163,74,.5)}
-    50%{opacity:.35;box-shadow:0 0 0 4px rgba(22,163,74,0)}
+    0%,100%{opacity:1}
+    50%{opacity:.35}
   }
   @media (prefers-reduced-motion:reduce){.run-dot{animation:none}}
 
@@ -286,7 +289,7 @@
     border:1px solid var(--line);background:#fff;color:var(--muted);cursor:pointer;
   }
   .mapbtn:hover{border-color:#c7d7fe;background:var(--accent-soft);color:var(--accent)}
-  .map-hd{display:flex;align-items:baseline;gap:8px;padding:12px 0 6px;font-size:12px;color:var(--muted)}
+  .map-hd{display:flex;align-items:center;gap:8px;padding:12px 0 6px;font-size:12px;color:var(--muted)}
   .map-hd b{font-size:13px;color:var(--text);font-weight:600}
   .map-hd .sp{margin-left:auto}
   .map-reset{
@@ -294,6 +297,11 @@
     border:1px solid var(--line);background:#fff;color:var(--muted);
   }
   .map-reset:hover{color:var(--accent);border-color:#c7d7fe}
+  .map-zoom{
+    font:inherit;font-size:13px;line-height:1;width:22px;height:20px;padding:0;
+    border-radius:6px;cursor:pointer;border:1px solid var(--line);background:#fff;color:var(--muted);
+  }
+  .map-zoom:hover{color:var(--accent);border-color:#c7d7fe}
   .rmap{
     display:block;width:100%;height:auto;background:#fbfcfe;
     border:1px solid #eef0f4;border-radius:10px;touch-action:none;cursor:grab;
@@ -310,14 +318,21 @@
   .map-lg .map-now{display:inline-flex;align-items:center;gap:5px;color:#15803d;font-weight:600}
   .map-lg .map-now .mp-now-t{font-variant-numeric:tabular-nums;font-weight:500}
   .map-lg .map-now .mp-now-s{font-weight:400;color:#4b5563}
+  .map-lg .map-trains-lg{display:inline-flex;align-items:center;gap:5px;color:#15803d;font-weight:600}
+  .map-lg .map-trains-lg i{
+    width:0;height:0;display:inline-block;
+    border-left:5px solid #16a34a;border-top:3px solid transparent;border-bottom:3px solid transparent;
+  }
+  .rmap .mp-train{cursor:pointer}
+  .rmap .mp-train:hover path{fill:#0f766e}
   .map-lg .map-now i{
-    width:8px;height:8px;border-radius:50%;background:#16a34a;
+    width:0;height:0;border-radius:0;background:none;
+    border-left:8px solid #16a34a;border-top:5px solid transparent;border-bottom:5px solid transparent;
     animation:nowblink 1.25s ease-out infinite;
   }
   @keyframes nowblink{
-    0%{box-shadow:0 0 0 0 rgba(22,163,74,.55)}
-    70%{box-shadow:0 0 0 6px rgba(22,163,74,0)}
-    100%{box-shadow:0 0 0 0 rgba(22,163,74,0)}
+    0%,100%{opacity:1}
+    50%{opacity:.45}
   }
   .rmap path.mp-ln{transition:opacity .12s,stroke-width .12s}
   .rmap path.mp-ln.dim{opacity:.14}

@@ -971,6 +971,23 @@
     return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
   }
 
+  /* 两点在屏幕坐标里的方向角：0° 朝上、90° 朝右 */
+  function dirAngle(a, b) {
+    if (!a || !b) return 0;
+    var kx = Math.cos((a[0] + b[0]) / 2 * Math.PI / 180);
+    var dx = (b[1] - a[1]) * kx;
+    var dy = -(b[0] - a[0]);
+    if (!dx && !dy) return 0;
+    return Math.atan2(dx, -dy) * 180 / Math.PI;
+  }
+
+  function angleAtArc(arc, f) {
+    if (!arc || arc.pts.length < 2) return 0;
+    var target = Math.max(0, Math.min(1, f)) * arc.total, i = 1;
+    while (i < arc.cum.length - 1 && arc.cum[i] < target) i++;
+    return dirAngle(arc.pts[i - 1], arc.pts[i]);
+  }
+
   /* 按当前时刻和区间时刻，估算列车在本段几何上的位置 */
   function estimatedNow(spec) {
     if (!spec.timed || !spec.timed.length) return null;
@@ -989,7 +1006,8 @@
       if (s.dep == null || s.arr == null) continue;
       if (t >= s.dep && t <= s.arr) {
         var f = s.arr > s.dep ? (t - s.dep) / (s.arr - s.dep) : 0;
-        var p = pointAtArc(arcOfPts(s.pts), f);
+        var arc = arcOfPts(s.pts);
+        var p = pointAtArc(arc, f);
         var st = spec.st || [];
         var km = (st[s.from] && st[s.to]) ? st[s.from][2] + f * (st[s.to][2] - st[s.from][2]) : 0;
         var seg = kmSegment(st, km);
@@ -997,6 +1015,7 @@
         var toName = seg ? stName(st[seg.to][0]) : s.toName;
         return p ? {
           lat: p[0], lon: p[1], t: t,
+          angle: angleAtArc(arc, f),
           fromName: fromName, toName: toName,
           dwell: false, atStation: seg ? seg.at : false
         } : null;
@@ -1005,8 +1024,9 @@
         var n = spec.timed[i + 1];
         if (n.dep != null && t < n.dep) {
           var q = s.pts[s.pts.length - 1];
+          var nAng = n.pts && n.pts.length > 1 ? angleAtArc(arcOfPts(n.pts), 0) : angleAtArc(arcOfPts(s.pts), 1);
           return q ? {
-            lat: q[0], lon: q[1], t: t,
+            lat: q[0], lon: q[1], t: t, angle: nAng,
             fromName: s.toName, toName: s.toName, dwell: true, nextDep: n.dep
           } : null;
         }
@@ -1042,10 +1062,11 @@
   }
 
   /* 画图：viewBox 固定，字号/点径按容器宽度换算，保证屏幕上大小稳定 */
-  var VBW = 720, VBH = 620, mapRender = null, mapTimer = null, nowTimer = null, liveTimer = null, hotLine = '';
+  var VBW = 720, VBH = 620, mapRender = null, mapTimer = null, nowTimer = null, liveTimer = null, trainsTimer = null, hotLine = '';
 
   function drawRailMap(box, spec) {
     if (nowTimer && typeof clearInterval === 'function') { clearInterval(nowTimer); nowTimer = null; }
+    if (trainsTimer && typeof clearInterval === 'function') { clearInterval(trainsTimer); trainsTimer = null; }
     var all = flatten(spec.paths);
     if (!all.length) {
       all = (spec.stations || []).map(function (s) { return [s.lat, s.lon]; });
@@ -1074,37 +1095,51 @@
       if (y < miny) miny = y;
       if (y > maxy) maxy = y;
     });
+    (spec.trains || []).forEach(function (t) {
+      var x = t.lon * kx, y = -t.lat;
+      if (x < minx) minx = x;
+      if (x > maxx) maxx = x;
+      if (y < miny) miny = y;
+      if (y > maxy) maxy = y;
+    });
     var pad = Math.max((maxx - minx), (maxy - miny)) * 0.06 + 1e-4;
     minx -= pad; maxx += pad; miny -= pad; maxy += pad;
 
     var vw = maxx - minx, vh = maxy - miny;
-    if (vw / vh > VBW / VBH) vh = vw * VBH / VBW;
-    else vw = vh * VBW / VBH;
+    /* 按内容长宽比决定画布比例：南北向线路画高一点，东西向画扁一点 */
+    var aspect = vh / vw;
+    var dispAspect = Math.max(0.55, Math.min(1.7, aspect));
+    var vw0 = VBW, vh0 = VBW * dispAspect;
+    if (vw / vh > vw0 / vh0) vh = vw * vh0 / vw0;
+    else vw = vh * vw0 / vh0;
     var view = { x: (minx + maxx) / 2 - vw / 2, y: (miny + maxy) / 2 - vh / 2, w: vw, h: vh };
 
     box.innerHTML =
       '<div class="map-hd"><b>线路图</b><span>' +
       (spec.paths.length > 1 ? spec.paths.length + ' 段' : '') +
       '</span><span class="sp"></span>' +
+      '<button type="button" class="map-zoom" data-z="-1" aria-label="缩小">−</button>' +
+      '<button type="button" class="map-zoom" data-z="1" aria-label="放大">+</button>' +
       '<button type="button" class="map-reset">复位</button></div>' +
-      '<div class="mapwrap"><svg class="rmap" viewBox="0 0 ' + VBW + ' ' + VBH +
+      '<div class="mapwrap"><svg class="rmap" viewBox="0 0 ' + vw0.toFixed(0) + ' ' + vh0.toFixed(0) +
       '" preserveAspectRatio="xMidYMid meet" role="img" aria-label="线路示意图"></svg></div>' +
       '<div class="map-lg"></div>';
 
     var svg = box.querySelector('.rmap');
     var wrap = box.querySelector('.mapwrap');
-    var mapProject = null, nowMarker = null;
+    var mapProject = null, nowMarker = null, trainLayer = null, mapTrainK = 4.5, mapTrainFs = 8.5, lastAngle = null;
 
     function render() {
       var cw = wrap.clientWidth || 380;
-      var k = VBW / cw;
-      var scale = Math.min(VBW / view.w, VBH / view.h);
-      var ox = (VBW - view.w * scale) / 2 - view.x * scale;
-      var oy = (VBH - view.h * scale) / 2 - view.y * scale;
+      var k = vw0 / cw;
+      var scale = Math.min(vw0 / view.w, vh0 / view.h);
+      var ox = (vw0 - view.w * scale) / 2 - view.x * scale;
+      var oy = (vh0 - view.h * scale) / 2 - view.y * scale;
       function X(p) { return p[1] * kx * scale + ox; }
       function Y(p) { return -p[0] * scale + oy; }
 
       var fs = 11 * k, dotR = 3.2 * k, halo = 3 * k, lineW = 3;
+      var trainK = 4.5 * k, trainFs = 8.5 * k;
       var html = '';
       var est = spec.kind === 'train' ? estimatedNow(spec) : null;
 
@@ -1116,6 +1151,10 @@
       });
       if (est) legend += '<span class="map-now"><i></i>估算位置 <span class="mp-now-t">' + fmtNow(est.t) +
         '</span><span class="mp-now-s">' + esc(nowStatus(est)) + '</span></span>';
+      if (spec.getTrains || spec.trains) {
+        legend += '<span class="map-trains-lg"><i></i>运行中 <span class="mp-train-count">' +
+          ((spec.trains || []).length) + '</span></span>';
+      }
       box.querySelector('.map-lg').innerHTML = legend;
 
       spec.paths.forEach(function (p) {
@@ -1205,17 +1244,86 @@
       var nowHtml = '';
       if (est) {
         var ex = X([est.lat, est.lon]), ey = Y([est.lat, est.lon]);
-        var r0 = 4 * k, r1 = 8 * k;
-        nowHtml = '<g class="mp-now" style="transform:translate(' + ex.toFixed(1) + 'px,' + ey.toFixed(1) + 'px)">' +
-          '<circle cx="0" cy="0" r="' + r0.toFixed(1) + '" fill="#16a34a" stroke="#fff" stroke-width="' + (1.6 * k).toFixed(1) + '">' +
-          '<animate attributeName="r" values="' + r0.toFixed(1) + ';' + r1.toFixed(1) + ';' + r0.toFixed(1) + '" dur="1.4s" repeatCount="indefinite"/>' +
+        var tri = 7 * k, ang0 = est.angle || 0;
+        lastAngle = ang0;
+        nowHtml = '<g class="mp-now" style="transform:translate(' + ex.toFixed(1) + 'px,' + ey.toFixed(1) + 'px) rotate(' + ang0.toFixed(1) + 'deg)">' +
+          '<path d="M0,' + (-tri * 1.1).toFixed(1) + ' L' + tri.toFixed(1) + ',' + (tri * 0.85).toFixed(1) +
+          ' L' + (-tri).toFixed(1) + ',' + (tri * 0.85).toFixed(1) + ' Z" fill="#16a34a" stroke="#fff"' +
+          ' stroke-width="1.6" vector-effect="non-scaling-stroke" stroke-linejoin="round">' +
           '<animate attributeName="opacity" values="1;.55;1" dur="1.4s" repeatCount="indefinite"/>' +
-          '</circle></g>';
+          '</path></g>';
       }
-      svg.innerHTML = html + dots + labels + lineLabels + nowHtml;
+      var focusHtml = '';
+      if (spec.focus) {
+        var fx = X([spec.focus.lat, spec.focus.lon]), fy = Y([spec.focus.lat, spec.focus.lon]);
+        focusHtml = '<g class="mp-focus">' +
+          '<circle cx="' + fx.toFixed(1) + '" cy="' + fy.toFixed(1) + '" r="' + (4.5 * k).toFixed(1) +
+          '" fill="#111827" stroke="#fff" stroke-width="' + (1.8 * k).toFixed(1) + '"/>' +
+          '<text x="' + fx.toFixed(1) + '" y="' + (fy - 8 * k).toFixed(1) + '" text-anchor="middle" font-size="' +
+          (fs * 1.05).toFixed(1) + '" font-weight="700" fill="#111827" stroke="#fbfcfe" stroke-width="' +
+          (halo * 1.2).toFixed(1) + '" paint-order="stroke">' + esc(spec.focus.name) + '</text></g>';
+      }
+      svg.innerHTML = html + dots + labels + lineLabels + '<g class="mp-trains"></g>' + nowHtml + focusHtml;
       mapProject = function (lat, lon) { return [X([lat, lon]), Y([lat, lon])]; };
       nowMarker = svg.querySelector('.mp-now');
+      trainLayer = svg.querySelector('.mp-trains');
+      mapTrainK = trainK;
+      mapTrainFs = trainFs;
+      renderTrains();
       if (hotLine) paintHl(hotLine);
+    }
+
+    function renderTrains() {
+      if (!trainLayer || !mapProject) return;
+      var trains = spec.getTrains ? spec.getTrains() : (spec.trains || []);
+      spec.trains = trains;
+      var out = '', placed = [], i, j;
+      var kUnit = mapTrainK / 4.5;
+      for (i = 0; i < trains.length; i++) {
+        var t = trains[i];
+        var p = mapProject(t.lat, t.lon);
+        if (!p) continue;
+        var x = p[0], y = p[1], tri = mapTrainK;
+        var ang = t.angle || 0;
+        var fs = mapTrainFs, w = t.no.length * fs * 0.62 + 4, h = fs * 1.15;
+        var cands = [
+          [x - w / 2, y - tri * 1.8 - h, 'middle'],
+          [x - w / 2, y + tri * 1.8, 'middle'],
+          [x + tri * 1.2, y - h / 2, 'start'],
+          [x - tri * 1.2 - w, y - h / 2, 'start']
+        ];
+        var pos = null;
+        for (j = 0; j < cands.length; j++) {
+          var r = [cands[j][0], cands[j][1], w, h], ok = true;
+          for (var q = 0; q < placed.length; q++) {
+            var r2 = placed[q];
+            if (r[0] < r2[0] + r2[2] && r2[0] < r[0] + r[2] &&
+                r[1] < r2[1] + r2[3] && r2[1] < r[1] + r[3]) { ok = false; break; }
+          }
+          if (ok) { pos = cands[j]; placed.push(r); break; }
+        }
+        if (!pos) {
+          pos = [x - w / 2, y - tri * 1.8 - h * (placed.length + 1), 'middle'];
+        }
+        out += '<a href="#" data-k="' + esc(t.no) + '">' +
+          '<g class="mp-train" transform="translate(' + x.toFixed(1) + ',' + y.toFixed(1) +
+          ') rotate(' + ang.toFixed(1) + ')">' +
+          '<path d="M0,' + (-tri).toFixed(1) + ' L' + (tri * 0.8).toFixed(1) + ',' + tri.toFixed(1) +
+          ' L' + (-tri * 0.8).toFixed(1) + ',' + tri.toFixed(1) + ' Z" fill="#16a34a" stroke="#fff"' +
+          ' stroke-width="1.2" vector-effect="non-scaling-stroke" stroke-linejoin="round"></path>' +
+          '<title>' + esc(t.no) + '</title></g>' +
+          '<text x="' + pos[0].toFixed(1) + '" y="' + pos[1].toFixed(1) + '" text-anchor="' + pos[2] +
+          '" font-size="' + fs.toFixed(1) + '" fill="#15803d" font-weight="600" stroke="#fbfcfe"' +
+          ' stroke-width="' + (2.5 * kUnit).toFixed(1) + '" paint-order="stroke">' +
+          esc(t.no) + '</text></a>';
+      }
+      trainLayer.innerHTML = out;
+      var cnt = box.querySelector('.mp-train-count');
+      if (cnt) cnt.textContent = trains.length;
+    }
+
+    function updateTrains() {
+      if (spec.getTrains) renderTrains();
     }
 
     function updateNow() {
@@ -1229,7 +1337,13 @@
       }
       if (!nowMarker || !mapProject) { render(); return; }
       var p = mapProject(est.lat, est.lon);
-      nowMarker.style.transform = 'translate(' + p[0].toFixed(1) + 'px,' + p[1].toFixed(1) + 'px)';
+      var ang = est.angle || 0;
+      if (lastAngle != null) {
+        while (ang - lastAngle > 180) ang -= 360;
+        while (ang - lastAngle < -180) ang += 360;
+      }
+      lastAngle = ang;
+      nowMarker.style.transform = 'translate(' + p[0].toFixed(1) + 'px,' + p[1].toFixed(1) + 'px) rotate(' + ang.toFixed(1) + 'deg)';
       var tEl = box.querySelector('.mp-now-t');
       if (tEl) tEl.textContent = fmtNow(est.t);
       var sEl = box.querySelector('.mp-now-s');
@@ -1243,11 +1357,28 @@
     if (spec.kind === 'train' && typeof setInterval === 'function') {
       nowTimer = setInterval(updateNow, 1000);
     }
+    if (spec.getTrains && typeof setInterval === 'function') {
+      trainsTimer = setInterval(updateTrains, 1000);
+    }
 
     var reset = box.querySelector('.map-reset');
     reset.addEventListener('click', function () {
       view = { x: (minx + maxx) / 2 - vw / 2, y: (miny + maxy) / 2 - vh / 2, w: vw, h: vh };
       render();
+    });
+
+    box.querySelectorAll('.map-zoom').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var f = +b.getAttribute('data-z') > 0 ? 0.7 : 1.43;
+        var cx = view.x + view.w / 2, cy = view.y + view.h / 2;
+        var nw = Math.max(vw * 0.02, Math.min(vw * 2, view.w * f));
+        var nh = nw * view.h / view.w;
+        view.x = cx - nw / 2;
+        view.y = cy - nh / 2;
+        view.w = nw;
+        view.h = nh;
+        render();
+      });
     });
 
     var drag = null, moved = false;
@@ -1261,7 +1392,7 @@
       var dx = e.clientX - drag.x, dy = e.clientY - drag.y;
       if (Math.abs(dx) + Math.abs(dy) > 3) moved = true;
       var cw = wrap.clientWidth || 380;
-      var sc = Math.min(VBW / view.w, VBH / view.h);
+      var sc = Math.min(vw0 / view.w, vh0 / view.h);
       view.x = drag.vx - dx / sc;
       view.y = drag.vy - dy / sc;
       render();
@@ -1277,9 +1408,9 @@
       e.preventDefault();
       var r = svg.getBoundingClientRect();
       var sx = (e.clientX - r.left) / r.width, sy = (e.clientY - r.top) / r.height;
-      var scale = Math.min(VBW / view.w, VBH / view.h);
-      var wx = view.x + (sx * VBW - (VBW - view.w * scale) / 2) / scale;
-      var wy = view.y + (sy * VBH - (VBH - view.h * scale) / 2) / scale;
+      var scale = Math.min(vw0 / view.w, vh0 / view.h);
+      var wx = view.x + (sx * vw0 - (vw0 - view.w * scale) / 2) / scale;
+      var wy = view.y + (sy * vh0 - (vh0 - view.h * scale) / 2) / scale;
       var f = Math.exp(e.deltaY * 0.0012);
       var nw = Math.max(vw * 0.02, Math.min(vw * 2, view.w * f));
       var nh = nw * view.h / view.w;
@@ -1354,8 +1485,174 @@
     }
     var spec = lineSpec(name);
     spec.kind = 'line';
+    var list = trainsOnLine(name).map(function (x) { return x.no; });
+    var parts = name.split('/');
+    function onLine() {
+      return runningTrainsFor(list).filter(function (t) {
+        return t.line && parts.indexOf(t.line) >= 0;
+      });
+    }
+    spec.trains = onLine();
+    spec.getTrains = onLine;
     spec.est = spec.stations.filter(function (s) { return s.est; }).length;
     drawRailMap(box, spec);
+  }
+
+  var ST_LINES = null;
+  function stationLineIndex() {
+    if (ST_LINES) return ST_LINES;
+    ST_LINES = {};
+    for (var L in LST) {
+      var via = LST[L] || [];
+      for (var i = 0; i < via.length; i++) {
+        var n = via[i][0];
+        if (!ST_LINES[n]) ST_LINES[n] = {};
+        ST_LINES[n][L] = 1;
+      }
+    }
+    return ST_LINES;
+  }
+
+  /* 相邻区间几何：本线没有形状时，借一条经过这两个站的线路的形状 */
+  function lineIntervalPts(L, aName, bName) {
+    var pa = RAIL.s && RAIL.s[aName], pb = RAIL.s && RAIL.s[bName];
+    if (!pa || !pb) return null;
+    var geo = RAIL.l && RAIL.l[L];
+    var pts = geo ? sliceLine(geo, pa, pb) : null;
+    if (pts && pts.length > 1) return pts;
+    var A = stationLineIndex()[aName] || {}, B = stationLineIndex()[bName] || {};
+    var lvia = LST[L] || [], lset = {};
+    lvia.forEach(function (x) { lset[x[0]] = 1; });
+    var best = null, bestOv = -1;
+    for (var G in A) {
+      if (!B[G] || G === L) continue;
+      var g = RAIL.l && RAIL.l[G];
+      if (!g || !g.g) continue;
+      var s = sliceLine(g, pa, pb);
+      if (!s || s.length < 2) continue;
+      var ov = 0, gv = LST[G] || [];
+      for (var j = 0; j < gv.length; j++) if (lset[gv[j][0]]) ov++;
+      if (ov > bestOv) { bestOv = ov; best = s; }
+    }
+    return best || [pa, pb];
+  }
+
+  function intervalBox(pts) {
+    var b = { minLat: Infinity, maxLat: -Infinity, minLon: Infinity, maxLon: -Infinity };
+    pts.forEach(function (q) {
+      if (q[0] < b.minLat) b.minLat = q[0];
+      if (q[0] > b.maxLat) b.maxLat = q[0];
+      if (q[1] < b.minLon) b.minLon = q[1];
+      if (q[1] > b.maxLon) b.maxLon = q[1];
+    });
+    return b;
+  }
+
+  function inInterval(p, iv) {
+    if ((p.fromName === iv.a && p.toName === iv.b) ||
+        (p.fromName === iv.b && p.toName === iv.a)) return true;
+    var b = iv.box, pad = 0.03;
+    return p.lat >= b.minLat - pad && p.lat <= b.maxLat + pad &&
+      p.lon >= b.minLon - pad && p.lon <= b.maxLon + pad;
+  }
+
+  /* 车站页：只取该站前后相邻区间的线路和车次 */
+  function stationMapData(sid) {
+    var nm = ST[sid];
+    var lines = stationLineIndex()[nm] || {};
+    var list = ensureIndex()[sid] || [];
+    var pos = runningTrainsFor(list);
+    var intervals = [], seen = {};
+    for (var L in lines) {
+      var via = LST[L] || [];
+      for (var i = 0; i < via.length; i++) {
+        if (via[i][0] !== nm) continue;
+        var pairs = [];
+        if (i > 0) pairs.push([i - 1, i]);
+        if (i + 1 < via.length) pairs.push([i, i + 1]);
+        pairs.forEach(function (pair) {
+          var a = via[pair[0]], b = via[pair[1]];
+          if (!a || !b) return;
+          var key = L + '|' + a[0] + '|' + b[0];
+          if (seen[key]) return;
+          seen[key] = 1;
+          var pts = lineIntervalPts(L, a[0], b[0]);
+          if (!pts) return;
+          intervals.push({ line: L, a: a[0], b: b[0], pts: pts, box: intervalBox(pts) });
+        });
+      }
+    }
+    intervals.forEach(function (iv) {
+      iv.trains = pos.filter(function (p) {
+        return p.line === iv.line && inInterval(p, iv);
+      });
+    });
+    return { list: list, intervals: intervals.filter(function (iv) { return iv.trains.length > 0; }) };
+  }
+
+  function fillStationMap(sid) {
+    var box = out.querySelector('#mapcol');
+    if (!box) return;
+    if (!MAP_OPEN) { box.innerHTML = ''; return; }
+    if (!RAIL) {
+      box.innerHTML = '<div class="map-hd"><b>线路图</b></div><div class="map-skel">正在加载线路数据…</div>';
+      loadRail(function () { fillStationMap(sid); });
+      return;
+    }
+    var data = stationMapData(sid);
+    if (!data.intervals.length) {
+      box.innerHTML = '<div class="map-hd"><b>线路图</b></div>' +
+        '<div class="map-skel">当前相邻区间没有运行中车次</div>';
+      return;
+    }
+    var nm = ST[sid], p = RAIL.s && RAIL.s[nm];
+    var paths = [], used = [], cols = {}, seenLine = {};
+    data.intervals.forEach(function (iv) {
+      paths.push({ name: iv.line, color: lineColor(iv.line), pts: iv.pts });
+      if (!seenLine[iv.line]) {
+        seenLine[iv.line] = 1;
+        used.push(iv.line);
+        cols[iv.line] = lineColor(iv.line);
+      }
+    });
+    var stations = p ? [{ name: nm, lat: p[0], lon: p[1], idx: 0, first: true, last: true }] : [];
+    var seenSt = {};
+    seenSt[nm] = 1;
+    data.intervals.forEach(function (iv) {
+      [iv.a, iv.b].forEach(function (n) {
+        if (seenSt[n]) return;
+        var q = RAIL.s && RAIL.s[n];
+        if (!q) return;
+        seenSt[n] = 1;
+        stations.push({ name: n, lat: q[0], lon: q[1], idx: 0 });
+      });
+    });
+    var trains = [], seenNo = {};
+    data.intervals.forEach(function (iv) {
+      iv.trains.forEach(function (t) {
+        if (seenNo[t.no]) return;
+        seenNo[t.no] = 1;
+        trains.push(t);
+      });
+    });
+    var list = data.list;
+    function liveTrains() {
+      var pos = runningTrainsFor(list), res = [], seen = {};
+      data.intervals.forEach(function (iv) {
+        pos.forEach(function (t) {
+          if (seen[t.no] || t.line !== iv.line || !inInterval(t, iv)) return;
+          seen[t.no] = 1;
+          res.push(t);
+        });
+      });
+      return res;
+    }
+    drawRailMap(box, {
+      paths: paths, stations: stations, names: used, cols: cols,
+      trains: trains, kind: 'station',
+      focus: p ? { name: nm, lat: p[0], lon: p[1] } : null,
+      getTrains: liveTrains
+    });
   }
 
   function elecName(v) {
@@ -1403,7 +1700,7 @@
   function toggleMap() {
     MAP_OPEN = !MAP_OPEN;
     try { localStorage.setItem('mapOpen', MAP_OPEN ? '1' : '0'); } catch (e) { /* noop */ }
-    out.className = 'wrap' + (MAP_OPEN && (S.kind === 'train' || S.kind === 'line') ? ' wide' : '');
+    out.className = 'wrap' + (MAP_OPEN && (S.kind === 'train' || S.kind === 'line' || S.kind === 'station') ? ' wide' : '');
     var card = out.querySelector('.card');
     if (card && card.classList) card.classList.toggle('mapoff', !MAP_OPEN);
     var btn = out.querySelector('[data-map]');
@@ -1414,8 +1711,10 @@
     if (MAP_OPEN) {
       if (S.kind === 'train') fillTrainMap(S.no, S.tab || 0);
       else if (S.kind === 'line') fillLineMap(S.ln);
+      else if (S.kind === 'station') fillStationMap(S.st);
     } else {
       if (nowTimer && typeof clearInterval === 'function') { clearInterval(nowTimer); nowTimer = null; }
+      if (trainsTimer && typeof clearInterval === 'function') { clearInterval(trainsTimer); trainsTimer = null; }
       mapRender = null;
       var box = out.querySelector('#mapcol');
       if (box) box.innerHTML = '';
@@ -1426,6 +1725,7 @@
   function paint() {
     if (nowTimer) { clearInterval(nowTimer); nowTimer = null; }
     if (liveTimer) { clearInterval(liveTimer); liveTimer = null; }
+    if (trainsTimer) { clearInterval(trainsTimer); trainsTimer = null; }
     mapRender = null;
     hotLine = '';
     var r;
@@ -1436,7 +1736,7 @@
     else if (S.kind === 'bu') r = buView(S.q || S.bu || S.raw);
     else if (S.kind === 'pair') r = pairView();
     else r = empty();
-    out.className = 'wrap' + (MAP_OPEN && (S.kind === 'train' || S.kind === 'line') ? ' wide' : '');
+    out.className = 'wrap' + (MAP_OPEN && (S.kind === 'train' || S.kind === 'line' || S.kind === 'station') ? ' wide' : '');
     return r;
   }
 
@@ -1467,10 +1767,16 @@
       if (now >= a[2] && now <= b[1]) {
         var f = b[1] > a[2] ? (now - a[2]) / (b[1] - a[2]) : 0;
         var km = st[a[0]][2] + f * (st[b[0]][2] - st[a[0]][2]);
-        return kmSegment(st, km) || { from: a[0], to: b[0] };
+        var seg = kmSegment(st, km) || { from: a[0], to: b[0], at: false };
+        var f2 = 0;
+        if (!seg.at && st[seg.to] && st[seg.to][2] !== st[seg.from][2]) {
+          f2 = (km - st[seg.from][2]) / (st[seg.to][2] - st[seg.from][2]);
+          f2 = Math.max(0, Math.min(1, f2));
+        }
+        return { from: seg.from, to: seg.to, f: f2, at: !!seg.at };
       }
       if (now > b[1] && b[2] != null && now < b[2]) {
-        return { from: b[0], to: b[0] };
+        return { from: b[0], to: b[0], f: 0, at: true };
       }
     }
     return null;
@@ -1487,6 +1793,53 @@
 
   function runDot(no, tab) {
     return isRunning(no, tab) ? '<span class="run-dot" title="运行中"></span>' : '';
+  }
+
+  function trainPos(no, tab) {
+    var live = liveSegment(no, tab);
+    if (!live) return null;
+    var st = TR[no] && TR[no][tab];
+    if (!st || !RAIL || !RAIL.s) return null;
+    var a = RAIL.s[ST[st[live.from][0]]];
+    var b = RAIL.s[ST[st[live.to][0]]];
+    if (!a) return null;
+    var lat, lon, p0, p1;
+    if (live.from === live.to || !b) {
+      lat = a[0];
+      lon = a[1];
+      p0 = a;
+      var ni = live.from + 1 < st.length ? RAIL.s[ST[st[live.from + 1][0]]] : null;
+      var pi = live.from > 0 ? RAIL.s[ST[st[live.from - 1][0]]] : null;
+      p1 = ni || pi || a;
+    } else {
+      var f = live.f || 0;
+      lat = a[0] + (b[0] - a[0]) * f;
+      lon = a[1] + (b[1] - a[1]) * f;
+      p0 = a;
+      p1 = b;
+    }
+    var kx = Math.cos(lat * Math.PI / 180);
+    var sx = (p1[1] - p0[1]) * kx;
+    var sy = -(p1[0] - p0[0]);
+    var angle = (sx || sy) ? Math.atan2(sx, -sy) * 180 / Math.PI : 0;
+    return {
+      no: no, lat: lat, lon: lon, angle: angle, line: pickLine(st[live.from][1]),
+      fromName: stName(st[live.from][0]), toName: stName(st[live.to][0])
+    };
+  }
+
+  function runningTrainsFor(list) {
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      var no = list[i];
+      var vs = TR[no];
+      if (!vs) continue;
+      for (var v = 0; v < vs.length; v++) {
+        var p = trainPos(no, v);
+        if (p) { out.push(p); break; }
+      }
+    }
+    return out;
   }
 
   function paintLiveRows(no, tab) {
@@ -1741,16 +2094,18 @@
     var list = (idx[sid] || []).slice().sort(cmp);
     var m = META && META.stations && META.stations[name];
 
-    var html = '<section class="card"><div class="head">' +
+    var head = '<div class="head">' +
       '<span class="no sm">车站</span><span class="route">' + stLink(sid) + '</span>' +
+      mapBtn() +
       '<span class="meta" id="smeta">' + (m ? esc(m[0]) + ' · ' + esc(m[1]) + ' · ' + esc(m[4]) + ' · ' : '') +
       '途经 ' + num(list.length) + ' 个车次</span></div>' +
       '<div class="chips" id="schips"></div>';
 
+    var body = '';
     if (!list.length) {
-      html += '<div class="err">没有车次途经该站。</div>';
+      body += '<div class="err">没有车次途经该站。</div>';
     } else {
-      html += '<ul class="res">' + list.slice(0, MAX_LIST).map(function (no) {
+      body += '<ul class="res">' + list.slice(0, MAX_LIST).map(function (no) {
         var info = atStation(no, sid);
         var e = timeAt(no, info.vi, info.k);
         return '<li><a href="#" data-k="' + esc(no) + '" data-hl="' + sid + '"><b>' + runDot(no) + esc(no) + '</b>' +
@@ -1759,12 +2114,15 @@
           '<span class="rm">第 ' + (info.k + 1) + ' 站 · ' + num(info.km) + ' km</span></a></li>';
       }).join('') + '</ul>';
       if (list.length > MAX_LIST) {
-        html += '<div class="more">仅显示前 ' + MAX_LIST + ' 条，共 ' + num(list.length) + ' 条</div>';
+        body += '<div class="more">仅显示前 ' + MAX_LIST + ' 条，共 ' + num(list.length) + ' 条</div>';
       }
     }
 
-    out.innerHTML = html + '</section>';
+    out.innerHTML = '<section class="card' + (MAP_OPEN ? '' : ' mapoff') + '">' + head +
+      '<div class="cols"><div class="colmain">' + body + '</div>' +
+      '<aside class="mapcol" id="mapcol"></aside></div></section>';
     fillStationChips(sid);
+    fillStationMap(sid);
     document.title = name + ' 途经车次 · 列车经由查询';
   }
 
