@@ -862,8 +862,26 @@
     return best;
   }
 
+  function sliceLineAll(geo, a, b) {
+    var res = [];
+    if (!geo || !geo.g || !geo.g.length) return res;
+    for (var k = 0; k < geo.g.length; k++) {
+      var pts = decLine(geo.g[k]);
+      if (pts.length < 2) continue;
+      var ia = nearestIdx(pts, a), ib = nearestIdx(pts, b);
+      if (ia < 0 || ib < 0) continue;
+      var da = d2(pts[ia], a), db = d2(pts[ib], b);
+      if (da > 0.04 || db > 0.04) continue;
+      var lo = Math.min(ia, ib), hi = Math.max(ia, ib);
+      var sub = pts.slice(lo, hi + 1);
+      if (ia > ib) sub.reverse();
+      res.push({ part: k, pts: [a].concat(sub, [b]), score: da + db });
+    }
+    return res;
+  }
+
   /* 一个区间用哪条线的几何：先看两端站各自线路，优先两端都在站序里的、截取点更多的 */
-  function chooseSegLine(aName, bName, p, q, idA, idB) {
+  function chooseSegLine(no, aName, bName, p, q, idA, idB) {
     var cand = [];
     function add(x) { if (x && cand.indexOf(x) < 0) cand.push(x); }
     [idA, idB].forEach(function (id) {
@@ -873,21 +891,25 @@
       });
       add(pickLine(id));
     });
+    var isUp = /[02468]$/.test(no);
     var best = null, bestScore = null;
     cand.forEach(function (L) {
       var geo = RAIL.l && RAIL.l[L];
       if (!geo || !geo.g) return;
-      var pts = sliceLine(geo, p, q);
-      if (!pts || pts.length < 2) return;
-      var via = LST[L] || {}, seen = {};
-      via.forEach ? via.forEach(function (x) { seen[x[0]] = 1; }) : (function () {
-        for (var i = 0; i < via.length; i++) seen[via[i][0]] = 1;
-      })();
+      var slices = sliceLineAll(geo, p, q);
+      if (!slices.length) return;
+      slices.sort(function (a, b) { return a.part - b.part; });
+      var pick = slices.length > 1 ? (isUp ? slices[0] : slices[1]) : slices[0];
+      if (!pick) return;
+      var via = LST[L] || [];
+      var seen = {};
+      for (var i = 0; i < via.length; i++) seen[via[i][0]] = 1;
       var both = (seen[aName] ? 1 : 0) + (seen[bName] ? 1 : 0);
-      var score = [both, pts.length];
+      var score = [both, pick.pts.length, -pick.part];
       var better = !bestScore || score[0] > bestScore[0] ||
-        (score[0] === bestScore[0] && score[1] > bestScore[1]);
-      if (better) { bestScore = score; best = { line: L, pts: pts }; }
+        (score[0] === bestScore[0] && (score[1] > bestScore[1] ||
+          (score[1] === bestScore[1] && score[2] > bestScore[2])));
+      if (better) { bestScore = score; best = { line: L, pts: pick.pts }; }
     });
     return best;
   }
@@ -913,7 +935,7 @@
       if (!p || !q) continue;
       var ln = ln0;
       var pts = geo ? sliceLine(geo, p, q) : null;
-      var chosen = chooseSegLine(nm, nb, p, q, st[i][1], st[i + 1][1]);
+      var chosen = chooseSegLine(no, nm, nb, p, q, st[i][1], st[i + 1][1]);
       if (chosen) { ln = chosen.line; pts = chosen.pts; }
       if (!pts) pts = [p, q];
       if (names.indexOf(ln) < 0) names.push(ln);
@@ -1354,8 +1376,9 @@
         var ex = X([est.lat, est.lon]), ey = Y([est.lat, est.lon]);
         var tri = trainK, ang0 = est.angle || 0;
         lastAngle = ang0;
-        var spd = liveSpeed(spec.no, spec.tab);
-        var noTxt = esc(spec.no) + (spd == null ? '' : ' <tspan class="spd">' + spd + '</tspan>');
+        var spd = liveSpeed(spec.no, spec.tab, pickLine(spec.st && spec.st[0] ? spec.st[0][1] : ''));
+        var spdText = spd == null ? '' : spd + ' km/h';
+        var noTxt = esc(spec.no) + (spdText ? ' <tspan class="spd">' + spdText + '</tspan>' : '');
         var fsNow = trainFs;
         var lyNow = ey - tri * 1.8 - fsNow * 1.15;
         nowHtml = '<g class="mp-now">' +
@@ -1394,8 +1417,28 @@
           '</circle><circle cx="' + lx.toFixed(1) + '" cy="' + ly.toFixed(1) + '" r="' +
           (2 * k).toFixed(1) + '" fill="#fff"/></g>';
       }
+      var scaleHtml = '';
+      var mPerUnit = view.w > 0 ? (view.w * 111320) / vw0 : 1000;
+      var steps = [1000, 2000, 5000, 10000, 20000, 50000, 100000, 200000, 500000, 1000000];
+      var barM = steps[0];
+      for (var si = 0; si < steps.length; si++) {
+        if (steps[si] / mPerUnit <= vw0 * 0.3) barM = steps[si];
+        else break;
+      }
+      var barW = barM / mPerUnit;
+      var sx = vw0 - 18 - barW, sy = vh0 - 18;
+      scaleHtml = '<g class="mp-scale">' +
+        '<line x1="' + sx.toFixed(1) + '" y1="' + (sy - 8).toFixed(1) + '" x2="' + (sx + barW).toFixed(1) +
+        '" y2="' + (sy - 8).toFixed(1) + '" stroke="#6b7280" stroke-width="1.5"/>' +
+        '<line x1="' + sx.toFixed(1) + '" y1="' + (sy - 12).toFixed(1) + '" x2="' + sx.toFixed(1) +
+        '" y2="' + (sy - 4).toFixed(1) + '" stroke="#6b7280" stroke-width="1.5"/>' +
+        '<line x1="' + (sx + barW).toFixed(1) + '" y1="' + (sy - 12).toFixed(1) + '" x2="' +
+        (sx + barW).toFixed(1) + '" y2="' + (sy - 4).toFixed(1) + '" stroke="#6b7280" stroke-width="1.5"/>' +
+        '<text x="' + (sx + barW / 2).toFixed(1) + '" y="' + (sy - 13).toFixed(1) +
+        '" text-anchor="middle" font-size="' + (11 * k).toFixed(1) + '" fill="#6b7280">' +
+        (barM >= 1000 ? (barM / 1000) + ' km' : barM + ' m') + '</text></g>';
       svg.innerHTML = html + dots + labels + lineLabels + '<g class="mp-trains"></g>' +
-        nowHtml + focusHtml + locateHtml;
+        nowHtml + focusHtml + locateHtml + scaleHtml;
       mapProject = function (lat, lon) { return [X([lat, lon]), Y([lat, lon])]; };
       nowMarker = svg.querySelector('.mp-now-tri');
       nowLabel = svg.querySelector('.mp-now-label');
@@ -1438,8 +1481,9 @@
         var isUp = /[02468]$/.test(t.no);
         var col = isUp ? '#2563eb' : '#16a34a';
         var txtCol = isUp ? '#1d4ed8' : '#15803d';
-        var spd = liveSpeed(t.no);
-        var label = t.no + (spd == null ? '' : ' ' + spd);
+        var spd = liveSpeed(t.no, t.tab, t.line);
+        var spdText = spd == null ? '' : spd + ' km/h';
+        var label = t.no + (spdText ? ' ' + spdText : '');
         var fs = mapTrainFs, w = label.length * fs * 0.62 + 4, h = fs * 1.15;
         var cands = [
           [x - w / 2, y - tri * 1.8 - h, 'middle'],
@@ -1465,7 +1509,7 @@
         prevPos[t.no] = [t.lat, t.lon];
         var key = 'tr:' + t.no;
         var tf = 'translate(' + x.toFixed(1) + ',' + y.toFixed(1) + ') rotate(' + ang.toFixed(1) + ')';
-        var txtHtml = esc(t.no) + (spd == null ? '' : ' <tspan class="spd">' + spd + '</tspan>');
+        var txtHtml = esc(t.no) + (spdText ? ' <tspan class="spd">' + spdText + '</tspan>' : '');
         var a = existing[key];
         if (a) {
           var g = a.querySelector('.mp-train'), txt = a.querySelector('text');
@@ -1570,10 +1614,11 @@
       }
       lastAngle = ang;
       nowMarker.style.transform = 'translate(' + p[0].toFixed(1) + 'px,' + p[1].toFixed(1) + 'px) rotate(' + ang.toFixed(1) + 'deg)';
-      var spd = liveSpeed(spec.no, spec.tab);
+      var spd = liveSpeed(spec.no, spec.tab, pickLine(spec.st && spec.st[0] ? spec.st[0][1] : ''));
+      var spdText = spd == null ? '' : spd + ' km/h';
       nowLabel.setAttribute('x', p[0].toFixed(1));
       nowLabel.setAttribute('y', (p[1] - mapTrainK * 1.8 - mapTrainFs * 1.15).toFixed(1));
-      nowLabel.innerHTML = esc(spec.no) + (spd == null ? '' : ' <tspan class="spd">' + spd + '</tspan>');
+      nowLabel.innerHTML = esc(spec.no) + (spdText ? ' <tspan class="spd">' + spdText + '</tspan>' : '');
     }
 
     mapRender = render;
@@ -1958,7 +2003,21 @@
   }
 
   /* 当前办客区间的均速 km/h；停站为 0，算不出返回 null */
-  function liveSpeed(no, tab) {
+  function lineSpeedLimit(line) {
+    var t = (RAIL && RAIL.l && RAIL.l[line] && RAIL.l[line].t) || {};
+    var v = t.maxspeed;
+    if (v == null && t.params) {
+      for (var k in t.params) {
+        if (k.indexOf('最高') >= 0 || k.indexOf('速度') >= 0) { v = t.params[k]; break; }
+      }
+    }
+    if (typeof v === 'number') return v > 0 ? v : 0;
+    var m = /(\d+(?:\.\d+)?)/.exec(String(v || ''));
+    return m ? +m[1] : 0;
+  }
+
+  /* 当前瞬时速度：停站 0，起步渐加速、到站前减速，不超过线路限速 */
+  function liveSpeed(no, tab, line) {
     tab = tab || 0;
     var st = TR[no] && TR[no][tab], tm = TM[no] && TM[no][tab] || [];
     if (!st || tm.length < 2) return null;
@@ -1976,7 +2035,21 @@
       if (a[2] == null || b[1] == null) continue;
       if (now >= a[2] && now <= b[1]) {
         var dkm = st[b[0]][2] - st[a[0]][2], dt = b[1] - a[2];
-        return (dkm > 0 && dt > 0) ? Math.round(dkm * 60 / dt) : 0;
+        if (!(dkm > 0 && dt > 0)) return 0;
+        var vAvg = dkm * 60 / dt;
+        var ta = Math.min(2, dt * 0.25);
+        var td = ta;
+        var denom = dt - (ta + td) / 2;
+        if (denom <= 0) return Math.round(vAvg);
+        var vPeak = vAvg * dt / denom;
+        var limit = lineSpeedLimit(line);
+        if (limit > 0 && vPeak > limit) vPeak = limit;
+        var e = Math.max(0, Math.min(dt, now - a[2]));
+        var v;
+        if (e < ta) v = vPeak * e / ta;
+        else if (e > dt - td) v = vPeak * (dt - e) / td;
+        else v = vPeak;
+        return Math.max(0, Math.round(v));
       }
       if (now > b[1] && b[2] != null && now < b[2]) return 0;
     }
@@ -2140,7 +2213,7 @@
       }
     }
     return {
-      no: no, lat: lat, lon: lon, angle: angle, line: line,
+      no: no, tab: tab, lat: lat, lon: lon, angle: angle, line: line,
       fromName: fromName, toName: toName
     };
   }
