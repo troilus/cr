@@ -862,26 +862,8 @@
     return best;
   }
 
-  function sliceLineAll(geo, a, b) {
-    var res = [];
-    if (!geo || !geo.g || !geo.g.length) return res;
-    for (var k = 0; k < geo.g.length; k++) {
-      var pts = decLine(geo.g[k]);
-      if (pts.length < 2) continue;
-      var ia = nearestIdx(pts, a), ib = nearestIdx(pts, b);
-      if (ia < 0 || ib < 0) continue;
-      var da = d2(pts[ia], a), db = d2(pts[ib], b);
-      if (da > 0.04 || db > 0.04) continue;
-      var lo = Math.min(ia, ib), hi = Math.max(ia, ib);
-      var sub = pts.slice(lo, hi + 1);
-      if (ia > ib) sub.reverse();
-      res.push({ part: k, pts: [a].concat(sub, [b]), score: da + db });
-    }
-    return res;
-  }
-
   /* 一个区间用哪条线的几何：先看两端站各自线路，优先两端都在站序里的、截取点更多的 */
-  function chooseSegLine(no, aName, bName, p, q, idA, idB) {
+  function chooseSegLine(aName, bName, p, q, idA, idB) {
     var cand = [];
     function add(x) { if (x && cand.indexOf(x) < 0) cand.push(x); }
     [idA, idB].forEach(function (id) {
@@ -891,25 +873,21 @@
       });
       add(pickLine(id));
     });
-    var isUp = /[02468]$/.test(no);
     var best = null, bestScore = null;
     cand.forEach(function (L) {
       var geo = RAIL.l && RAIL.l[L];
       if (!geo || !geo.g) return;
-      var slices = sliceLineAll(geo, p, q);
-      if (!slices.length) return;
-      slices.sort(function (a, b) { return a.part - b.part; });
-      var pick = slices.length > 1 ? (isUp ? slices[0] : slices[1]) : slices[0];
-      if (!pick) return;
-      var via = LST[L] || [];
-      var seen = {};
-      for (var i = 0; i < via.length; i++) seen[via[i][0]] = 1;
+      var pts = sliceLine(geo, p, q);
+      if (!pts || pts.length < 2) return;
+      var via = LST[L] || {}, seen = {};
+      via.forEach ? via.forEach(function (x) { seen[x[0]] = 1; }) : (function () {
+        for (var i = 0; i < via.length; i++) seen[via[i][0]] = 1;
+      })();
       var both = (seen[aName] ? 1 : 0) + (seen[bName] ? 1 : 0);
-      var score = [both, pick.pts.length, -pick.part];
+      var score = [both, pts.length];
       var better = !bestScore || score[0] > bestScore[0] ||
-        (score[0] === bestScore[0] && (score[1] > bestScore[1] ||
-          (score[1] === bestScore[1] && score[2] > bestScore[2])));
-      if (better) { bestScore = score; best = { line: L, pts: pick.pts }; }
+        (score[0] === bestScore[0] && score[1] > bestScore[1]);
+      if (better) { bestScore = score; best = { line: L, pts: pts }; }
     });
     return best;
   }
@@ -935,7 +913,7 @@
       if (!p || !q) continue;
       var ln = ln0;
       var pts = geo ? sliceLine(geo, p, q) : null;
-      var chosen = chooseSegLine(no, nm, nb, p, q, st[i][1], st[i + 1][1]);
+      var chosen = chooseSegLine(nm, nb, p, q, st[i][1], st[i + 1][1]);
       if (chosen) { ln = chosen.line; pts = chosen.pts; }
       if (!pts) pts = [p, q];
       if (names.indexOf(ln) < 0) names.push(ln);
