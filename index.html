@@ -211,6 +211,18 @@
   tbody tr.live-b .st::after{content:"下一站"}
   tbody tr.live .st::after{content:"当前"}
 
+  /* 运行中车次前的绿点 */
+  .run-dot{
+    display:inline-block;width:7px;height:7px;border-radius:50%;
+    background:#16a34a;margin-right:5px;vertical-align:1px;
+    animation:runblink 1.2s ease-out infinite;
+  }
+  @keyframes runblink{
+    0%,100%{opacity:1;box-shadow:0 0 0 0 rgba(22,163,74,.5)}
+    50%{opacity:.35;box-shadow:0 0 0 4px rgba(22,163,74,0)}
+  }
+  @media (prefers-reduced-motion:reduce){.run-dot{animation:none}}
+
   .err{padding:26px 18px;color:var(--muted)}
   .err b{color:var(--text)}
   .empty{padding:40px 18px;text-align:center;color:var(--muted)}
@@ -411,7 +423,9 @@
     stopFake();
     var a = document.createElement('script');
     var v = (window.ROUTE_DATA && window.ROUTE_DATA.ver) || '';
-    a.src = 'app.js' + (location.protocol === 'file:' || !v ? '' : '?v=' + encodeURIComponent(v));
+    var lm = 0;
+    try { lm = Date.parse(document.lastModified) || 0; } catch (e) { /* noop */ }
+    a.src = 'app.js' + (location.protocol === 'file:' || !v ? '' : '?v=' + encodeURIComponent(v + '-' + lm));
     document.body.appendChild(a);
   }
 

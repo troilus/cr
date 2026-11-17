@@ -402,7 +402,7 @@
     ac.innerHTML = list.map(function (it) {
       if (it.t === 'train') {
         var v = TR[it.v][0];
-        return '<li data-i="' + esc(it.v) + '"><span class="ty">车次</span><b>' + esc(it.v) + '</b>' +
+        return '<li data-i="' + esc(it.v) + '"><span class="ty">车次</span><b>' + runDot(it.v) + esc(it.v) + '</b>' +
           '<span class="ln"> ' + esc(stName(v[0][0])) + ' → ' +
           esc(stName(v[v.length - 1][0])) + '</span></li>';
       }
@@ -1442,7 +1442,7 @@
 
   function resTrain(no, attrs) {
     var v = TR[no][0];
-    return '<li><a href="#" data-k="' + esc(no) + '"' + (attrs || '') + '><b>' + esc(no) + '</b>' +
+    return '<li><a href="#" data-k="' + esc(no) + '"' + (attrs || '') + '><b>' + runDot(no) + esc(no) + '</b>' +
       '<span class="rt">' + esc(stName(v[0][0])) + ' → ' + esc(stName(v[v.length - 1][0])) + '</span>' +
       '<span class="rm">' + num(v[v.length - 1][2]) + ' km · ' + v.length + ' 站</span></a></li>';
   }
@@ -1469,20 +1469,45 @@
         var km = st[a[0]][2] + f * (st[b[0]][2] - st[a[0]][2]);
         return kmSegment(st, km) || { from: a[0], to: b[0] };
       }
-      if (now > b[1] && i + 2 < tm.length && tm[i + 2][2] != null && now < tm[i + 2][2]) {
+      if (now > b[1] && b[2] != null && now < b[2]) {
         return { from: b[0], to: b[0] };
       }
     }
     return null;
   }
 
+  function isRunning(no, tab) {
+    if (tab != null) return !!liveSegment(no, tab);
+    var vs = TR[no] || [];
+    for (var i = 0; i < vs.length; i++) {
+      if (liveSegment(no, i)) return true;
+    }
+    return false;
+  }
+
+  function runDot(no, tab) {
+    return isRunning(no, tab) ? '<span class="run-dot" title="运行中"></span>' : '';
+  }
+
   function paintLiveRows(no, tab) {
+    var live = liveSegment(no, tab);
+    var hd = out.querySelector('.head .no');
+    if (hd) {
+      var dot = hd.querySelector('.run-dot');
+      if (live && !dot) {
+        dot = document.createElement('span');
+        dot.className = 'run-dot';
+        dot.title = '运行中';
+        hd.insertBefore(dot, hd.firstChild);
+      } else if (!live && dot) {
+        if (dot.parentNode) dot.parentNode.removeChild(dot);
+      }
+    }
     var rows = out.querySelectorAll('tbody tr');
     if (!rows || !rows.length) return;
     for (var i = 0; i < rows.length; i++) {
       if (rows[i].classList) rows[i].classList.remove('live', 'live-a', 'live-b');
     }
-    var live = liveSegment(no, tab);
     if (!live) return;
     if (live.from === live.to) {
       if (rows[live.from] && rows[live.from].classList) rows[live.from].classList.add('live');
@@ -1511,7 +1536,7 @@
     }
 
     var head = '<div class="head">' +
-      '<span class="no">' + esc(no) + '</span>' +
+      '<span class="no">' + runDot(no, tab) + esc(no) + '</span>' +
       '<span class="route">' + stLink(first[0]) +
       '<i>→</i>' + stLink(last[0]) + '</span>' +
       mapBtn() +
@@ -1728,7 +1753,7 @@
       html += '<ul class="res">' + list.slice(0, MAX_LIST).map(function (no) {
         var info = atStation(no, sid);
         var e = timeAt(no, info.vi, info.k);
-        return '<li><a href="#" data-k="' + esc(no) + '" data-hl="' + sid + '"><b>' + esc(no) + '</b>' +
+        return '<li><a href="#" data-k="' + esc(no) + '" data-hl="' + sid + '"><b>' + runDot(no) + esc(no) + '</b>' +
           '<span class="rt">' + esc(stName(info.from)) + ' → ' + esc(stName(info.to)) + '</span>' +
           (e ? '<span class="tm">' + fmtT(e[1]) + ' / ' + fmtT(e[2]) + '</span>' : '') +
           '<span class="rm">第 ' + (info.k + 1) + ' 站 · ' + num(info.km) + ' km</span></a></li>';
@@ -1779,7 +1804,7 @@
     } else {
       html += '<ul class="res">' + list.slice(0, MAX_LIST).map(function (no) {
         var v = TR[no][0];
-        return '<li><a href="#" data-k="' + esc(no) + '"><b>' + esc(no) + '</b>' +
+        return '<li><a href="#" data-k="' + esc(no) + '"><b>' + runDot(no) + esc(no) + '</b>' +
           '<span class="rt">' + esc(stName(v[0][0])) + ' → ' + esc(stName(v[v.length - 1][0])) + '</span>' +
           '<span class="rm">' + v.length + ' 站 · ' + num(v[v.length - 1][2]) + ' km</span></a></li>';
       }).join('') + '</ul>';
@@ -1833,7 +1858,7 @@
       body += '<div class="grp">经停车次<span class="cnt">' + num(list.length) + '</span></div>' +
         '<ul class="res">' + list.slice(0, MAX_LIST).map(function (x) {
           var v = TR[x.no][0];
-          return '<li><a href="#" data-k="' + esc(x.no) + '"><b>' + esc(x.no) + '</b>' +
+          return '<li><a href="#" data-k="' + esc(x.no) + '"><b>' + runDot(x.no) + esc(x.no) + '</b>' +
             '<span class="rt">' + esc(stName(v[0][0])) + ' → ' + esc(stName(v[v.length - 1][0])) + '</span>' +
             '<span class="rm">经 ' + x.n + ' 站</span></a></li>';
         }).join('') + '</ul>';
@@ -1873,7 +1898,7 @@
           if (ea && eb && eb[1] >= ea[2]) tt += ' · ' + durTxt(eb[1] - ea[2]);
         }
         return '<li><a href="#" data-k="' + esc(x.no) + '" data-pf="' + aId + '" data-pt="' + bId + '">' +
-          '<b>' + esc(x.no) + '</b>' +
+          '<b>' + runDot(x.no) + esc(x.no) + '</b>' +
           '<span class="rt">' + esc(an) + ' → ' + esc(bn) + '</span>' +
           (tt ? '<span class="tm">' + tt + '</span>' : '') +
           '<span class="rm">区间 ' + num(x.km) + ' km · ' + x.n + ' 站</span></a></li>';
