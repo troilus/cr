@@ -1062,7 +1062,12 @@
       if (s.dep == null || s.arr == null) continue;
       if (t >= s.dep && t <= s.arr) {
         var f = s.arr > s.dep ? (t - s.dep) / (s.arr - s.dep) : 0;
-        var arc = arcOfPts(s.pts);
+        var prof = null, tm = TM[spec.no] && TM[spec.no][spec.tab || 0] || [];
+        for (var pi = 0; pi < tm.length - 1; pi++) {
+          if (tm[pi][2] === s.dep && tm[pi + 1][1] === s.arr) { prof = segProfile(spec.no, spec.tab || 0, pi); break; }
+        }
+        if (prof) f = profileAt(prof, t - s.dep).f;
+        var arc = prof ? prof.arc : arcOfPts(s.pts);
         var p = pointAtArc(arc, f);
         var st = spec.st || [];
         var km = (st[s.from] && st[s.to]) ? st[s.from][2] + f * (st[s.to][2] - st[s.from][2]) : 0;
@@ -2051,44 +2056,147 @@
     return m ? +m[1] : 0;
   }
 
-  /* 当前瞬时速度：停站 0，起步渐加速、到站前减速，不超过线路限速 */
-  function liveSpeed(no, tab, line) {
+  /* ---- 分段速度曲线：几何曲率 + 进出站限速 + 车型加减速 + 时刻表对齐 ---- */
+  var PROF_CACHE = {};
+  function trainDynamics(no) {
+    var c = String(no).charAt(0).toUpperCase();
+    if ('GDC'.indexOf(c) >= 0) return { a: 0.6, b: 0.7 };
+    if ('ZT'.indexOf(c) >= 0) return { a: 0.35, b: 0.4 };
+    return { a: 0.45, b: 0.5 };
+  }
+
+  function turnoutSpeed(line) {
+    var v = lineSpeedLimit(line);
+    if (v >= 250) return 140;
+    if (v >= 160) return 80;
+    return 45;
+  }
+
+  function nextSpeed(vKmh, ds, a) {
+    var v = vKmh / 3.6;
+    return Math.sqrt(Math.max(0, v * v + 2 * a * Math.max(0, ds))) * 3.6;
+  }
+
+  function segProfile(no, tab, si) {
     tab = tab || 0;
     var st = TR[no] && TR[no][tab], tm = TM[no] && TM[no][tab] || [];
-    if (!st || tm.length < 2) return null;
+    if (!st || !tm[si] || !tm[si + 1]) return null;
+    var a = tm[si], b = tm[si + 1];
+    if (a[2] == null || b[1] == null || a[0] === b[0]) return null;
+    var key = no + '|' + tab + '|' + si + '|' + a[2] + '|' + b[1];
+    if (PROF_CACHE[key]) return PROF_CACHE[key];
+    var aName = stName(st[a[0]][0]), bName = stName(st[b[0]][0]);
+    var pa = RAIL && RAIL.s && RAIL.s[aName], pb = RAIL && RAIL.s && RAIL.s[bName];
+    if (!pa || !pb) return null;
+    var chosen = chooseSegLine(aName, bName, pa, pb, st[a[0]][1], st[b[0]][1]);
+    var line = chosen ? chosen.line : pickLine(st[a[0]][1]);
+    var pts = chosen && chosen.pts ? chosen.pts : [pa, pb];
+    var S = [0];
+    for (var i = 1; i < pts.length; i++) S.push(S[i - 1] + Math.sqrt(d2(pts[i - 1], pts[i])) * 111320);
+    var totalM = S[S.length - 1];
+    if (!(totalM > 0)) return null;
+    var dyn = trainDynamics(no), limit = lineSpeedLimit(line) || 160, vturn = turnoutSpeed(line);
+    var lim = [], v = [], t = [0];
+    for (i = 0; i < pts.length; i++) {
+      var lc = limit, dEnd = totalM - S[i];
+      var r = 20000;
+      if (i > 0 && i < pts.length - 1) {
+        var v1 = [pts[i][0] - pts[i - 1][0], (pts[i][1] - pts[i - 1][1]) * Math.cos(pts[i][0] * Math.PI / 180)];
+        var v2 = [pts[i + 1][0] - pts[i][0], (pts[i + 1][1] - pts[i][1]) * Math.cos(pts[i][0] * Math.PI / 180)];
+        var n1 = Math.hypot(v1[0], v1[1]), n2 = Math.hypot(v2[0], v2[1]);
+        if (n1 > 1e-9 && n2 > 1e-9) {
+          var dot = Math.max(-1, Math.min(1, (v1[0] * v2[0] + v1[1] * v2[1]) / (n1 * n2)));
+          var ang = Math.acos(dot), ds = (n1 + n2) / 2 * 111320;
+          if (ang > 0.0005) r = Math.max(200, Math.min(20000, ds / ang));
+        }
+      }
+      lc = Math.min(lc, 3.9 * Math.sqrt(r));
+      if (S[i] < 1000) lc = Math.min(lc, vturn);
+      if (dEnd < 1000) {
+        lc = Math.min(lc, vturn, 3.6 * Math.sqrt(2 * dyn.b * Math.max(0, dEnd)));
+        if (dEnd < 200) lc = Math.min(lc, 20, 3.6 * Math.sqrt(2 * dyn.b * Math.max(0, dEnd)));
+      }
+      lim.push(Math.max(0, lc));
+    }
+    v[0] = 0;
+    for (i = 1; i < pts.length; i++) v[i] = Math.min(lim[i], nextSpeed(v[i - 1], S[i] - S[i - 1], dyn.a));
+    v[v.length - 1] = 0;
+    for (i = pts.length - 2; i >= 0; i--) v[i] = Math.min(v[i], nextSpeed(v[i + 1], S[i + 1] - S[i], dyn.b));
+    for (i = 1; i < pts.length; i++) {
+      var vv = (v[i - 1] + v[i]) / 2 / 3.6;
+      t.push(t[i - 1] + (vv > 0 ? (S[i] - S[i - 1]) / vv / 60 : 0));
+    }
+    var modelT = t[t.length - 1], schedT = b[1] - a[2];
+    if (modelT > 0 && schedT > 0 && modelT < schedT) {
+      var k = modelT / schedT, lv = lim.map(function (x) { return x * k; });
+      v[0] = 0;
+      for (i = 1; i < pts.length; i++) v[i] = Math.min(lv[i], nextSpeed(v[i - 1], S[i] - S[i - 1], dyn.a));
+      v[v.length - 1] = 0;
+      for (i = pts.length - 2; i >= 0; i--) v[i] = Math.min(v[i], nextSpeed(v[i + 1], S[i + 1] - S[i], dyn.b));
+      t = [0];
+      for (i = 1; i < pts.length; i++) {
+        vv = (v[i - 1] + v[i]) / 2 / 3.6;
+        t.push(t[i - 1] + (vv > 0 ? (S[i] - S[i - 1]) / vv / 60 : 0));
+      }
+    }
+    var prof = { line: line, pts: pts, S: S, v: v, t: t, totalM: totalM, totalT: t[t.length - 1], schedT: schedT, arc: arcOfPts(pts), dep: a[2], arr: b[1] };
+    PROF_CACHE[key] = prof;
+    return prof;
+  }
+
+  function profileAt(prof, elapsed) {
+    if (!prof || !prof.t || prof.t.length < 2) return { f: 0, v: 0 };
+    var tt = Math.max(0, Math.min(prof.totalT, elapsed || 0));
+    var lo = 0, hi = prof.t.length - 1;
+    while (lo + 1 < hi) {
+      var mid = (lo + hi) >> 1;
+      if (prof.t[mid] <= tt) lo = mid; else hi = mid;
+    }
+    var dtt = prof.t[hi] - prof.t[lo], r = dtt > 0 ? (tt - prof.t[lo]) / dtt : 0;
+    var f = (prof.S[lo] + (prof.S[hi] - prof.S[lo]) * r) / (prof.totalM || 1);
+    if (prof.schedT > 0 && prof.totalT > prof.schedT * 1.02) {
+      f = Math.max(0, Math.min(1, (elapsed || 0) / prof.schedT));
+    }
+    return {
+      f: f,
+      v: prof.v[lo] + (prof.v[hi] - prof.v[lo]) * r
+    };
+  }
+
+  function currentTimedSeg(no, tab, now) {
+    var tm = TM[no] && TM[no][tab] || [];
+    for (var i = 0; i < tm.length - 1; i++) {
+      var a = tm[i], b = tm[i + 1];
+      if (a[2] == null || b[1] == null) continue;
+      if (now >= a[2] && now <= b[1]) return { i: i, e: now - a[2] };
+      if (now > b[1] && b[2] != null && now < b[2]) return { dwell: true };
+    }
+    return null;
+  }
+
+  /* 当前瞬时速度：按分段曲线取值，停站 0 */
+  function liveSpeed(no, tab, line) {
+    tab = tab || 0;
+    var tm = TM[no] && TM[no][tab] || [];
+    if (!tm.length) return null;
     var d = new Date(), now = d.getHours() * 60 + d.getMinutes() + d.getSeconds() / 60;
-    var first = null, last = null, i;
-    for (i = 0; i < tm.length; i++) {
+    var first = null, last = null;
+    for (var i = 0; i < tm.length; i++) {
       if (tm[i][2] != null && (first == null || tm[i][2] < first)) first = tm[i][2];
       if (tm[i][1] != null && (last == null || tm[i][1] > last)) last = tm[i][1];
     }
     if (first == null || last == null) return null;
     if (now < first && last > 1440 && now + 1440 <= last) now += 1440;
     if (now < first || now > last) return null;
-    for (i = 0; i < tm.length - 1; i++) {
-      var a = tm[i], b = tm[i + 1];
-      if (a[2] == null || b[1] == null) continue;
-      if (now >= a[2] && now <= b[1]) {
-        var dkm = st[b[0]][2] - st[a[0]][2], dt = b[1] - a[2];
-        if (!(dkm > 0 && dt > 0)) return 0;
-        var vAvg = dkm * 60 / dt;
-        var ta = Math.min(2, dt * 0.25);
-        var td = ta;
-        var denom = dt - (ta + td) / 2;
-        if (denom <= 0) return Math.round(vAvg);
-        var vPeak = vAvg * dt / denom;
-        var limit = lineSpeedLimit(line);
-        if (limit > 0 && vPeak > limit) vPeak = limit;
-        var e = Math.max(0, Math.min(dt, now - a[2]));
-        var v;
-        if (e < ta) v = vPeak * e / ta;
-        else if (e > dt - td) v = vPeak * (dt - e) / td;
-        else v = vPeak;
-        return Math.max(0, Math.round(v));
-      }
-      if (now > b[1] && b[2] != null && now < b[2]) return 0;
-    }
-    return null;
+    var cur = currentTimedSeg(no, tab, now);
+    if (!cur) return null;
+    if (cur.dwell) return 0;
+    var prof = segProfile(no, tab, cur.i);
+    if (!prof) return null;
+    var v = profileAt(prof, cur.e).v;
+    var lim = lineSpeedLimit(prof.line);
+    if (lim > 0 && v > lim) v = lim;
+    return Math.max(0, Math.round(v));
   }
 
   /* ---------------- 视图 ---------------- */
@@ -2163,6 +2271,8 @@
       if (a[2] == null || b[1] == null) continue;
       if (now >= a[2] && now <= b[1]) {
         var f = b[1] > a[2] ? (now - a[2]) / (b[1] - a[2]) : 0;
+        var prof = segProfile(no, tab, i);
+        if (prof) f = profileAt(prof, now - a[2]).f;
         var km = st[a[0]][2] + f * (st[b[0]][2] - st[a[0]][2]);
         var seg = kmSegment(st, km) || { from: a[0], to: b[0], at: false };
         var f2 = 0;
