@@ -1007,7 +1007,7 @@
   /* 按当前时刻和区间时刻，估算列车在本段几何上的位置 */
   function estimatedNow(spec) {
     if (!spec.timed || !spec.timed.length) return null;
-    var d = new Date(), now = d.getHours() * 60 + d.getMinutes();
+    var d = new Date(), now = d.getHours() * 60 + d.getMinutes() + d.getSeconds() / 60;
     var first = null, last = null;
     spec.timed.forEach(function (s) {
       if (s.dep != null && (first == null || s.dep < first)) first = s.dep;
@@ -1081,6 +1081,7 @@
   var VBW = 720, VBH = 620, mapRender = null, mapTimer = null, nowTimer = null, liveTimer = null, trainsTimer = null, hotLine = '';
 
   function drawRailMap(box, spec) {
+    var locatePos = null, initialView = null, prevPos = {};
     if (nowTimer && typeof clearInterval === 'function') { clearInterval(nowTimer); nowTimer = null; }
     if (trainsTimer && typeof clearInterval === 'function') { clearInterval(trainsTimer); trainsTimer = null; }
     var all = flatten(spec.paths);
@@ -1124,7 +1125,9 @@
     var vw = maxx - minx, vh = maxy - miny;
     /* 按内容长宽比决定画布比例：南北向线路画高一点，东西向画扁一点 */
     var aspect = vh / vw;
-    var dispAspect = Math.max(0.55, Math.min(1.7, aspect));
+    var dispAspect = isMobile()
+      ? Math.max(1.0, Math.min(1.15, aspect))
+      : Math.max(0.55, Math.min(1.7, aspect));
     var vw0 = VBW, vh0 = VBW * dispAspect;
     if (vw / vh > vw0 / vh0) vh = vw * vh0 / vw0;
     else vw = vh * vw0 / vh0;
@@ -1132,8 +1135,8 @@
     if (isMobile()) {
       var fx = spec.focus && RAIL.s ? spec.focus.lon * kx : view.x + view.w / 2;
       var fy = spec.focus && RAIL.s ? -spec.focus.lat : view.y + view.h / 2;
-      view.w *= 0.7;
-      view.h *= 0.7;
+      view.w *= 0.65;
+      view.h *= 0.65;
       view.x = fx - view.w / 2;
       view.y = fy - view.h / 2;
     }
@@ -1153,7 +1156,6 @@
     var svg = box.querySelector('.rmap');
     var wrap = box.querySelector('.mapwrap');
     var mapProject = null, nowMarker = null, trainLayer = null, mapTrainK = 4.5, mapTrainFs = 8.5, lastAngle = null, showTrains = true;
-    var locatePos = null, initialView = null;
 
     function render() {
       var cw = wrap.clientWidth || 380;
@@ -1182,8 +1184,7 @@
         legend += '<label class="map-trains-lg"><input type="checkbox" class="mp-trains-toggle"' +
           (showTrains ? ' checked' : '') + '><i></i>运行中 <span class="mp-train-count">' +
           ((spec.trains || []).length) + '</span>' +
-          '<span class="mp-dir"><b class="down">下 0</b><b class="up">上 0</b></span>' +
-          '<span class="mp-updated">更新于 --:--:--</span></label>' +
+          '<span class="mp-dir"><b class="down">下 0</b><b class="up">上 0</b></span></label>' +
           '<button type="button" class="map-locate" data-locate title="显示我的位置">◎</button>';
       }
       box.querySelector('.map-lg').innerHTML = legend;
@@ -1338,6 +1339,7 @@
       mapProject = function (lat, lon) { return [X([lat, lon]), Y([lat, lon])]; };
       nowMarker = svg.querySelector('.mp-now');
       trainLayer = svg.querySelector('.mp-trains');
+      prevPos = {};
       mapTrainK = trainK;
       mapTrainFs = trainFs;
       renderTrains();
@@ -1353,8 +1355,13 @@
       host.__mapNo = {};
       trains.forEach(function (t) { host.__mapNo[t.no] = 1; });
       var down = 0, up = 0;
-      var out = '', placed = [], i, j;
+      var placed = [], i, j;
       var kUnit = mapTrainK / 4.5;
+      var existing = {};
+      [].forEach.call(trainLayer.children, function (a) {
+        var key = a.getAttribute('data-pop');
+        if (key) existing[key] = a;
+      });
       for (i = 0; i < trains.length; i++) {
         var t = trains[i];
         var p = mapProject(t.lat, t.lon);
@@ -1365,7 +1372,9 @@
         var col = isUp ? '#2563eb' : '#16a34a';
         var txtCol = isUp ? '#1d4ed8' : '#15803d';
         if (isUp) up++; else down++;
-        var fs = mapTrainFs, w = t.no.length * fs * 0.62 + 4, h = fs * 1.15;
+        var spd = liveSpeed(t.no);
+        var label = t.no + (spd == null ? '' : ' ' + spd);
+        var fs = mapTrainFs, w = label.length * fs * 0.62 + 4, h = fs * 1.15;
         var cands = [
           [x - w / 2, y - tri * 1.8 - h, 'middle'],
           [x - w / 2, y + tri * 1.8, 'middle'],
@@ -1385,27 +1394,54 @@
         if (!pos) {
           pos = [x - w / 2, y - tri * 1.8 - h * (placed.length + 1), 'middle'];
         }
-        out += '<a href="#" data-pop="tr:' + esc(t.no) + '">' +
-          '<g class="mp-train" transform="translate(' + x.toFixed(1) + ',' + y.toFixed(1) +
-          ') rotate(' + ang.toFixed(1) + ')">' +
-          '<path d="M0,' + (-tri).toFixed(1) + ' L' + (tri * 0.8).toFixed(1) + ',' + tri.toFixed(1) +
-          ' L' + (-tri * 0.8).toFixed(1) + ',' + tri.toFixed(1) + ' Z" fill="' + col + '" stroke="#fff"' +
-          ' stroke-width="1.2" vector-effect="non-scaling-stroke" stroke-linejoin="round"></path>' +
-          '<title>' + esc(t.no) + '</title></g>' +
-          '<text x="' + pos[0].toFixed(1) + '" y="' + pos[1].toFixed(1) + '" text-anchor="' + pos[2] +
-          '" font-size="' + fs.toFixed(1) + '" fill="' + txtCol + '" font-weight="600" stroke="#fbfcfe"' +
-          ' stroke-width="' + (2.5 * kUnit).toFixed(1) + '" paint-order="stroke">' +
-          esc(t.no) + '</text></a>';
+        var old = prevPos[t.no];
+        var moved = old && (Math.abs(old[0] - t.lat) > 0.0002 || Math.abs(old[1] - t.lon) > 0.0002);
+        prevPos[t.no] = [t.lat, t.lon];
+        var key = 'tr:' + t.no;
+        var tf = 'translate(' + x.toFixed(1) + ',' + y.toFixed(1) + ') rotate(' + ang.toFixed(1) + ')';
+        var txtHtml = esc(t.no) + (spd == null ? '' : ' <tspan class="spd">' + spd + '</tspan>');
+        var a = existing[key];
+        if (a) {
+          var g = a.querySelector('.mp-train'), txt = a.querySelector('text');
+          if (g) {
+            g.setAttribute('transform', tf);
+            g.style.transform = tf;
+            if (moved) {
+              g.classList.remove('mv');
+              void g.getBoundingClientRect();
+              g.classList.add('mv');
+            }
+          }
+          if (txt) {
+            txt.setAttribute('x', pos[0].toFixed(1));
+            txt.setAttribute('y', pos[1].toFixed(1));
+            txt.setAttribute('text-anchor', pos[2]);
+            txt.innerHTML = txtHtml;
+          }
+          delete existing[key];
+        } else {
+          trainLayer.insertAdjacentHTML('beforeend',
+            '<a href="#" data-pop="' + esc(key) + '">' +
+            '<g class="mp-train" transform="' + tf + '" style="transform:' + tf + '">' +
+            '<path d="M0,' + (-tri).toFixed(1) + ' L' + (tri * 0.8).toFixed(1) + ',' + tri.toFixed(1) +
+            ' L' + (-tri * 0.8).toFixed(1) + ',' + tri.toFixed(1) + ' Z" fill="' + col + '" stroke="#fff"' +
+            ' stroke-width="1.2" vector-effect="non-scaling-stroke" stroke-linejoin="round"></path>' +
+            '<title>' + esc(t.no) + '</title></g>' +
+            '<text x="' + pos[0].toFixed(1) + '" y="' + pos[1].toFixed(1) + '" text-anchor="' + pos[2] +
+            '" font-size="' + fs.toFixed(1) + '" fill="' + txtCol + '" font-weight="600" stroke="#fbfcfe"' +
+            ' stroke-width="' + (2.5 * kUnit).toFixed(1) + '" paint-order="stroke">' + txtHtml + '</text></a>');
+        }
       }
-      trainLayer.innerHTML = out;
+      Object.keys(existing).forEach(function (key) {
+        var a = existing[key];
+        if (a && a.parentNode) a.parentNode.removeChild(a);
+      });
       var cnt = box.querySelector('.mp-train-count');
       if (cnt) cnt.textContent = trains.length;
       var dEl = box.querySelector('.mp-dir .down');
       if (dEl) dEl.textContent = '下 ' + down;
       var uEl = box.querySelector('.mp-dir .up');
       if (uEl) uEl.textContent = '上 ' + up;
-      var stamp = box.querySelector('.mp-updated');
-      if (stamp) stamp.textContent = '更新于 ' + new Date().toTimeString().slice(0, 8);
       if (LIST_FILTER.maprun && host.__listRender) host.__listRender();
     }
 
@@ -1423,6 +1459,14 @@
 
     function stopTrains() {
       if (trainsTimer) { clearInterval(trainsTimer); trainsTimer = null; }
+    }
+
+    function clampView() {
+      var mx = view.w * 0.08, my = view.h * 0.08;
+      var loX = minx - view.w + mx, hiX = maxx - mx;
+      view.x = loX <= hiX ? Math.max(loX, Math.min(hiX, view.x)) : (minx + maxx) / 2 - view.w / 2;
+      var loY = miny - view.h + my, hiY = maxy - my;
+      view.y = loY <= hiY ? Math.max(loY, Math.min(hiY, view.y)) : (miny + maxy) / 2 - view.h / 2;
     }
 
     function showLocate(lat, lon) {
@@ -1498,6 +1542,7 @@
         view.y = cy - nh / 2;
         view.w = nw;
         view.h = nh;
+        clampView();
         render();
       });
     });
@@ -1519,6 +1564,7 @@
       var sc = Math.min(vw0 / view.w, vh0 / view.h);
       view.x = drag.vx - dx / sc;
       view.y = drag.vy - dy / sc;
+      clampView();
       render();
     });
     function endDrag() { drag = null; }
@@ -1542,6 +1588,7 @@
       view.y = wy - sy * nh;
       view.w = nw;
       view.h = nh;
+      clampView();
       render();
     }, { passive: false });
   }
@@ -1848,6 +1895,32 @@
     }
   }
 
+  /* 当前办客区间的均速 km/h；停站为 0，算不出返回 null */
+  function liveSpeed(no, tab) {
+    tab = tab || 0;
+    var st = TR[no] && TR[no][tab], tm = TM[no] && TM[no][tab] || [];
+    if (!st || tm.length < 2) return null;
+    var d = new Date(), now = d.getHours() * 60 + d.getMinutes() + d.getSeconds() / 60;
+    var first = null, last = null, i;
+    for (i = 0; i < tm.length; i++) {
+      if (tm[i][2] != null && (first == null || tm[i][2] < first)) first = tm[i][2];
+      if (tm[i][1] != null && (last == null || tm[i][1] > last)) last = tm[i][1];
+    }
+    if (first == null || last == null) return null;
+    if (now < first && last > 1440 && now + 1440 <= last) now += 1440;
+    if (now < first || now > last) return null;
+    for (i = 0; i < tm.length - 1; i++) {
+      var a = tm[i], b = tm[i + 1];
+      if (a[2] == null || b[1] == null) continue;
+      if (now >= a[2] && now <= b[1]) {
+        var dkm = st[b[0]][2] - st[a[0]][2], dt = b[1] - a[2];
+        return (dkm > 0 && dt > 0) ? Math.round(dkm * 60 / dt) : 0;
+      }
+      if (now > b[1] && b[2] != null && now < b[2]) return 0;
+    }
+    return null;
+  }
+
   /* ---------------- 视图 ---------------- */
   function paint() {
     if (nowTimer) { clearInterval(nowTimer); nowTimer = null; }
@@ -1906,7 +1979,7 @@
     var st = TR[no] && TR[no][tab];
     var tm = TM[no] && TM[no][tab] || [];
     if (!st || tm.length < 2) return null;
-    var d = new Date(), now = d.getHours() * 60 + d.getMinutes();
+    var d = new Date(), now = d.getHours() * 60 + d.getMinutes() + d.getSeconds() / 60;
     var first = null, last = null, i;
     for (i = 0; i < tm.length; i++) {
       if (tm[i][2] != null && (first == null || tm[i][2] < first)) first = tm[i][2];

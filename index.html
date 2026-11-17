@@ -350,7 +350,6 @@
   .map-lg .map-trains-lg .mp-dir{display:inline-flex;gap:8px;font-weight:500}
   .map-lg .map-trains-lg .mp-dir .down{color:#16a34a;font-weight:600}
   .map-lg .map-trains-lg .mp-dir .up{color:#2563eb;font-weight:600}
-  .map-lg .map-trains-lg .mp-updated{font-weight:400;color:#9aa1ab;font-size:11px}
   .map-lg .map-locate{
     font:inherit;font-size:14px;line-height:1;width:22px;height:20px;padding:0;
     border:1px solid var(--line);border-radius:6px;background:#fff;color:#2563eb;cursor:pointer;
@@ -360,8 +359,15 @@
     width:0;height:0;display:inline-block;
     border-left:5px solid #16a34a;border-top:3px solid transparent;border-bottom:3px solid transparent;
   }
-  .rmap .mp-train{cursor:pointer}
+  .rmap .mp-train{cursor:pointer;transition:transform 1s linear}
   .rmap .mp-train:hover path{fill:#0f766e}
+  .rmap .mp-train.mv path{animation:trainFlash .6s ease-out}
+  .rmap .mp-train text .spd{opacity:.72;font-size:.88em;font-weight:500}
+  @keyframes trainFlash{
+    0%{opacity:.25;stroke-width:4}
+    60%{opacity:1;stroke-width:2.4}
+    100%{opacity:1;stroke-width:1.2}
+  }
   .map-lg .map-now i{
     width:0;height:0;border-radius:0;background:none;
     border-left:8px solid #16a34a;border-top:5px solid transparent;border-bottom:5px solid transparent;
@@ -391,7 +397,6 @@
     .mapwrap{max-height:60vh;overflow:hidden}
     .rmap{max-height:60vh}
     .rmap text{letter-spacing:.2px}
-    .map-lg .map-trains-lg .mp-updated{display:none}
     .res a{flex-wrap:wrap}
     .res .lv{order:5;flex:1 1 100%;max-width:none;padding-left:0;margin-top:1px;justify-content:center}
   }
