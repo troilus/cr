@@ -334,6 +334,10 @@
   }
   .rmap:active{cursor:grabbing}
   .rmap text{font-family:inherit;user-select:none}
+  /* Safari 部分版本不支持 SVG text 的 paint-order，白描边会盖住字，直接去掉描边 */
+  @supports not (paint-order: stroke){
+    .rmap text{stroke:none !important}
+  }
   .rmap .mp-st{cursor:pointer}
   .rmap .mp-st:hover circle{fill:var(--accent)}
   .rmap .mp-stl{cursor:pointer}
@@ -359,7 +363,7 @@
     width:0;height:0;display:inline-block;
     border-left:5px solid #16a34a;border-top:3px solid transparent;border-bottom:3px solid transparent;
   }
-  .rmap .mp-train{cursor:pointer;transition:transform 1s linear}
+  .rmap .mp-train{cursor:pointer;transition:transform 1s linear;transform-box:view-box;transform-origin:0 0}
   .rmap .mp-train:hover path{fill:#0f766e}
   .rmap .mp-train.mv path{animation:trainFlash .6s ease-out}
   .rmap .mp-train text .spd{opacity:.72;font-size:.88em;font-weight:500}
