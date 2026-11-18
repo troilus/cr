@@ -654,11 +654,38 @@
     return h + '</div>';
   }
 
-  /* 线路卡：站数 / 里程 / 车次数 + 前几站 + 线路页入口 */
+  /* 线路卡：技术参数 + 站数 / 里程 / 车次数 + 前几站 + 线路页入口 */
+  function lnFacts(name) {
+    var t = (RAIL && RAIL.l && RAIL.l[name] && RAIL.l[name].t) || null;
+    if (!t) return '';
+    var params = t.params || {};
+    var rows = [];
+    var spd = params['最高运行速度'] || (t.maxspeed ? t.maxspeed + ' km/h' : '');
+    if (spd) rows.push(['最高运行速度', spd]);
+    if (t.lineType) rows.push(['类型', t.lineType]);
+    var lsz = params['线路数'];
+    if (!lsz && t.tracks) lsz = t.tracks === 2 ? '双线' : (t.tracks === 1 ? '单线' : t.tracks + ' 线');
+    if (lsz) rows.push(['线路数', lsz]);
+    if (!rows.length) return '';
+    return '<dl>' + rows.map(function (r) {
+      return '<dt>' + esc(r[0]) + '</dt><dd>' + esc(r[1]) + '</dd>';
+    }).join('') + '</dl>';
+  }
+
   function lnPop(name) {
     var via = LST[name] || null;
     var n = trainsOnLine(name).length;
-    var h = '<div class="pp">';
+    var h = '<div class="pp">' + lnFacts(name);
+    if (!RAIL && name.indexOf('/') < 0) {
+      h += '<div class="ps" id="ln-pending">线路资料加载中…</div>';
+      loadRail(function () {
+        if (!pop || pop.hidden) return;
+        var bd = pop.querySelector('.pop-bd');
+        if (!bd || !bd.querySelector('#ln-pending')) return;
+        bd.innerHTML = lnPop(name);
+        if (!isMobile() && popAnchor) placePop(popAnchor);
+      });
+    }
     if (via && via.length) {
       var km = via[via.length - 1][1] - via[0][1];
       h += '<div class="ps">' + num(via.length) + ' 站 · ' + num(km) + ' km · ' +
@@ -1341,7 +1368,7 @@
       var legend = '';
       spec.names.forEach(function (n) {
         if (!n) return;
-        legend += '<a href="#" data-go="' + esc(n) + '" data-hl="' + esc(n) + '"><i style="background:' +
+        legend += '<a href="#" data-pop="ln:' + esc(n) + '" data-hl="' + esc(n) + '"><i style="background:' +
           (spec.cols[n] || lineColor(n)) + '"></i>' + esc(n) + '</a>';
       });
       if (spec.getTrains || spec.trains) {
