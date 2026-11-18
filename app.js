@@ -99,6 +99,12 @@
     var d = Math.floor(v / 1440), m = v - 1440 * d;
     return pad2(Math.floor(m / 60)) + ':' + pad2(m % 60) + (d > 0 && !noDay ? '+' + d : '');
   }
+  function durLong(m) {
+    m = Math.floor(m);
+    if (m < 60) return m + ' 分';
+    var h = Math.floor(m / 60), r = m % 60;
+    return h + ' 小时' + (r ? ' ' + r + ' 分' : '');
+  }
   function durTxt(m) {
     var d = Math.floor(m / 1440), r = m - 1440 * d;
     return (d ? d + ' 天 ' : '') + Math.floor(r / 60) + ':' + pad2(r % 60);
@@ -2353,6 +2359,12 @@
         t.push(t[i - 1] + (vv > 0 ? (S[i] - S[i - 1]) / vv / 60 : 0));
       }
     }
+    /* 曲线仍比时刻表快时，把整段按时间拉平到到点，避免到站前提前掉到 0 */
+    if (schedT > 0 && t[t.length - 1] > 0 && t[t.length - 1] < schedT) {
+      var kt = schedT / t[t.length - 1];
+      for (i = 0; i < t.length; i++) t[i] *= kt;
+      for (i = 0; i < v.length; i++) v[i] /= kt;
+    }
     var prof = { line: line, pts: pts, S: S, v: v, t: t, totalM: totalM, totalT: t[t.length - 1], schedT: schedT, arc: arcOfPts(pts), dep: a[2], arr: b[1] };
     PROF_CACHE[key] = prof;
     return prof;
@@ -2423,7 +2435,9 @@
     var v = profileAt(prof, cur.e).v;
     var lim = lineSpeedLimit(prof.line);
     if (lim > 0 && v > lim) v = lim;
-    return Math.max(0, Math.round(v));
+    var r = Math.round(v);
+    /* 区间内（非停站）不显示 0 km/h */
+    return r < 1 ? 1 : r;
   }
 
   /* ---------------- 视图 ---------------- */
@@ -2456,11 +2470,12 @@
     var fromName = stName(st[live.from][0]);
     var toName = stName(st[live.to][0]);
     if (live.from !== live.to) {
-      return esc(fromName) + ' <i>→</i> <b class="mid">' + esc(pickLine(st[live.from][1])) +
+      /* 线路列存的是「到达该站所用的线」，所以本段用 to 那一行 */
+      return esc(fromName) + ' <i>→</i> <b class="mid">' + esc(pickLine(st[live.to][1])) +
         '</b> <i>→</i> ' + esc(toName);
     }
-    var prev = live.from > 0 ? pickLine(st[live.from - 1][1]) : '';
-    var next = live.from < st.length - 1 ? pickLine(st[live.from][1]) : '';
+    var prev = pickLine(st[live.from][1]);
+    var next = live.from + 1 < st.length ? pickLine(st[live.from + 1][1]) : '';
     var parts = [];
     if (prev) parts.push(esc(prev));
     parts.push('<b class="mid">' + esc(toName) + '</b>');
@@ -2644,25 +2659,84 @@
     return Math.round(km / dtH);
   }
 
+  /* 当前已走里程：停站取该站累计里程，区间按时刻比例插值 */
+  function runKm(st, tm, cur) {
+    if (!st || !tm || !cur) return null;
+    if (cur.dwell) {
+      var d = st[cur.k];
+      return d && d[2] != null ? d[2] : null;
+    }
+    var ta = tm[cur.i], tb = tm[cur.i + 1];
+    var a = ta ? st[ta[0]] : null, b = tb ? st[tb[0]] : null;
+    if (!a || !b || a[2] == null || b[2] == null || ta[2] == null || tb[1] == null) return null;
+    var span = tb[1] - ta[2];
+    var p = span > 0 ? Math.min(1, Math.max(0, cur.e / span)) : 1;
+    return a[2] + p * (b[2] - a[2]);
+  }
+
+  /* 全程的首个发点 / 末个到点 */
+  function tripSpan(tm) {
+    var dep = null, arr = null;
+    for (var i = 0; i < (tm || []).length; i++) {
+      if (tm[i][2] != null && (dep == null || tm[i][2] < dep)) dep = tm[i][2];
+      if (tm[i][1] != null && (arr == null || tm[i][1] > arr)) arr = tm[i][1];
+    }
+    if (dep == null || arr == null) return null;
+    return { dep: dep, arr: arr };
+  }
+
+  /* 当前进度：已运行分钟 / 已走里程 / 剩余分钟 / 剩余里程；未运行或已到终点返回 null */
+  function trainProgress(no, tab) {
+    tab = tab || 0;
+    var st = TR[no] && TR[no][tab], tm = TM[no] && TM[no][tab] || [];
+    if (!st || !st.length) return null;
+    var span = tripSpan(tm);
+    if (!span) return null;
+    var nw = trainNow(no, tab);
+    var cur = currentTimedSeg(no, tab, nw);
+    if (!cur) return null;
+    var km = runKm(st, tm, cur);
+    var totalKm = st[st.length - 1][2];
+    if (km == null || totalKm == null) return null;
+    var all = Math.max(0, span.arr - span.dep);
+    var el = Math.max(0, nw - span.dep);
+    return {
+      el: el, km: km,
+      rem: Math.max(0, all - el),
+      remKm: Math.max(0, totalKm - km)
+    };
+  }
+
   function updateHdStats() {
     var box = document.getElementById('hdstats');
     if (!box || !TR) return;
     var pu = 0, dv = 0;
     var byLine = {}, byStation = {}, cand = [];
+    var longest = { no: '', v: -1 }, farthest = { no: '', v: -1 };
     for (var no in TR) {
       if (!Object.prototype.hasOwnProperty.call(TR, no)) continue;
       var vs = TR[no] || [];
       for (var vi = 0; vi < vs.length; vi++) {
         var st = vs[vi] || [];
-        var cur = currentTimedSeg(no, vi, trainNow(no, vi));
+        var nw = trainNow(no, vi);
+        var cur = currentTimedSeg(no, vi, nw);
         if (!cur) continue;
+        var tm = TM[no] && TM[no][vi] || [];
+        var span = tripSpan(tm);
+        if (span && nw >= span.dep && nw - span.dep > longest.v) {
+          longest = { no: no, v: nw - span.dep, rem: Math.max(0, span.arr - nw) };
+        }
+        var km = runKm(st, tm, cur);
+        if (km != null && km > farthest.v) {
+          var tk = st[st.length - 1][2];
+          farthest = { no: no, v: km, rem: tk != null ? Math.max(0, tk - km) : null };
+        }
         if (cur.dwell) {
           var s = st[cur.k];
           var nm = s ? stName(s[0]) : '';
           if (nm) byStation[nm] = (byStation[nm] || 0) + 1;
         } else {
           if ('GDC'.indexOf(String(no).charAt(0).toUpperCase()) >= 0) dv++; else pu++;
-          var tm = TM[no] && TM[no][vi] || [];
           var seg = st[tm[cur.i] ? tm[cur.i][0] : -1];
           var ln = seg && seg[1] != null ? pickLine(seg[1]) : '';
           if (ln) byLine[ln] = (byLine[ln] || 0) + 1;
@@ -2687,7 +2761,13 @@
       '当前最快列车：<a href="#" data-stat-go="' + esc(fast.no) + '">' + esc(fast.no) + '</a>' +
       (fast.v >= 0 ? ' <b>' + fast.v + ' km/h</b>' : '') + '<br>' +
       '当前运行车辆最多线路：' + (tl.k ? '<a href="#" data-stat-go="' + esc(tl.k) + '">' + esc(tl.k) + '</a> <b>' + tl.v + '</b>' : '—') + '<br>' +
-      '当前停站车辆最多：' + (ts.k ? '<a href="#" data-stat-go="' + esc(ts.k) + '">' + esc(stationTxt) + '</a> <b>' + ts.v + '</b>' : '—');
+      '当前停站车辆最多：' + (ts.k ? '<a href="#" data-stat-go="' + esc(ts.k) + '">' + esc(stationTxt) + '</a> <b>' + ts.v + '</b>' : '—') + '<br>' +
+      '当前运行时间最长：' + (longest.no ?
+        '<a href="#" data-stat-go="' + esc(longest.no) + '">' + esc(longest.no) + '次</a> <b>' + durLong(longest.v) + '</b>' +
+        (longest.rem != null ? '，剩余 ' + durLong(longest.rem) : '') : '—') + '<br>' +
+      '当前运行里程最长：' + (farthest.no ?
+        '<a href="#" data-stat-go="' + esc(farthest.no) + '">' + esc(farthest.no) + '次</a> <b>' + num(Math.round(farthest.v)) + ' km</b>' +
+        (farthest.rem != null ? '，剩余里程 ' + num(Math.round(farthest.rem)) + ' km' : '') : '—');
   }
 
   function runDot(no, tab) {
@@ -2713,7 +2793,7 @@
     var toName = stName(st[live.to][0]);
     var a = RAIL.s[fromName];
     if (!a) return null;
-    var line = pickLine(st[live.from][1]);
+    var line = live.from !== live.to ? pickLine(st[live.to][1]) : pickLine(st[live.from][1]);
     var lat, lon, angle;
     if (live.from !== live.to) {
       var arc = intervalArc(line, fromName, toName);
@@ -2774,6 +2854,18 @@
     if (!box) return;
     var txt = spdText(no, tab);
     var sp = box.querySelector('.ts-spd');
+    var run = box.querySelector('.ts-run');
+    if (run) {
+      var p = trainProgress(no, tab);
+      if (p) {
+        run.style.display = '';
+        var rt = '已运行 ' + durLong(p.el) + '，' + num(Math.round(p.km)) + ' km，剩余 ' +
+          durLong(p.rem) + '，' + num(Math.round(p.remKm)) + ' km';
+        if (run.textContent !== rt) run.textContent = rt;
+      } else {
+        run.style.display = 'none';
+      }
+    }
     if (txt == null) { box.style.display = 'none'; return; }
     box.style.display = '';
     if (sp) {
@@ -2839,7 +2931,8 @@
 
     var headStatus = '<div class="tstatus">' +
       '<span class="ts-time">时刻 <b>' + tripTimes(no, tab) + '</b></span>' +
-      ' · 当前状态：<span class="ts-spd"></span></div>';
+      ' · 当前状态：<span class="ts-spd"></span>' +
+      '<div class="ts-run"></div></div>';
 
     var strip = '';
     if (bIdx >= 0) {
