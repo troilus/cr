@@ -78,8 +78,23 @@
       (d > 0 ? '<i class="d">+' + d + '</i>' : '');
   }
   function durTxt(m) {
-    var d = Math.floor(m / 1440), r = m - d * 1440;
+    var d = Math.floor(m / 1440), r = m - 1440 * d;
     return (d ? d + ' 天 ' : '') + Math.floor(r / 60) + ':' + pad2(r % 60);
+  }
+  /* 始发 / 终到时刻，跨日用 fmtT 的 +1 */
+  function tripTimes(no, tab) {
+    var tm = TM[no] && TM[no][tab] || [], dep = null, arr = null;
+    for (var i = 0; i < tm.length; i++) {
+      if (dep == null && tm[i][2] != null) dep = tm[i][2];
+      if (tm[i][1] != null) arr = tm[i][1];
+    }
+    return (dep == null ? '—' : fmtT(dep)) + ' / ' + (arr == null ? '—' : fmtT(arr));
+  }
+  /* 车次列表里的“起点 → 终点 + 始发/终到” */
+  function rtSpan(aName, bName, no, tab) {
+    return '<span class="rt"><b class="rtst">' + esc(aName) + '</b><i>→</i>' +
+      '<b class="rtst">' + esc(bName) + '</b>' +
+      '<span class="rtt">' + tripTimes(no, tab || 0) + '</span></span>';
   }
   // 取某条经由第 k 站的 [站序, 到点, 发点]
   function timeAt(no, vi, k) {
@@ -1125,7 +1140,7 @@
   }
 
   /* 画图：viewBox 固定，字号/点径按容器宽度换算，保证屏幕上大小稳定 */
-  var VBW = 720, VBH = 620, mapRender = null, mapTimer = null, nowTimer = null, liveTimer = null, trainsTimer = null, hotLine = '';
+  var VBW = 720, VBH = 620, mapRender = null, mapTimer = null, nowTimer = null, liveTimer = null, trainsTimer = null, hotLine = '', hotTrainNo = '';
 
   function drawRailMap(box, spec) {
     var locatePos = spec.keep ? spec.keep.locatePos : null;
@@ -1378,8 +1393,8 @@
         var tri = trainK, ang0 = est.angle || 0;
         lastAngle = ang0;
         var spd = liveSpeed(spec.no, spec.tab, pickLine(spec.st && spec.st[0] ? spec.st[0][1] : ''));
-        var spdText = spd == null ? '' : spd + ' km/h';
-        var noTxt = esc(spec.no) + (spdText ? ' <tspan class="spd">' + spdText + '</tspan>' : '');
+        var spdText = est.dwell ? (esc(est.toName) + '停站') : (spd == null ? '' : spd + ' km/h');
+        var noTxt = esc(spec.no) + (spdText ? ' <tspan class="spd' + (est.dwell ? ' dwell' : '') + '">' + spdText + '</tspan>' : '');
         var fsNow = trainFs;
         var lyNow = ey - tri * 1.8 - fsNow * 1.15;
         nowHtml = '<g class="mp-now">' +
@@ -1483,8 +1498,10 @@
         var col = isUp ? '#2563eb' : '#16a34a';
         var txtCol = isUp ? '#1d4ed8' : '#15803d';
         var spd = liveSpeed(t.no, t.tab, t.line);
-        var spdText = spd == null ? '' : spd + ' km/h';
-        var label = t.no + (spdText ? ' ' + spdText : '');
+        var dwellMap = t.fromName === t.toName;
+        var spdRaw = dwellMap ? (t.fromName + '停站') : (spd == null ? '' : spd + ' km/h');
+        var spdText = dwellMap ? (esc(t.fromName) + '停站') : spdRaw;
+        var label = t.no + (spdRaw ? ' ' + spdRaw : '');
         var fs = mapTrainFs, w = label.length * fs * 0.62 + 4, h = fs * 1.15;
         var cands = [
           [x - w / 2, y - tri * 1.8 - h, 'middle'],
@@ -1510,7 +1527,7 @@
         prevPos[t.no] = [t.lat, t.lon];
         var key = 'tr:' + t.no;
         var tf = 'translate(' + x.toFixed(1) + ',' + y.toFixed(1) + ') rotate(' + ang.toFixed(1) + ')';
-        var txtHtml = esc(t.no) + (spdText ? ' <tspan class="spd">' + spdText + '</tspan>' : '');
+        var txtHtml = esc(t.no) + (spdText ? ' <tspan class="spd' + (dwellMap ? ' dwell' : '') + '">' + spdText + '</tspan>' : '');
         var a = existing[key];
         if (a) {
           var g = a.querySelector('.mp-train'), txt = a.querySelector('text');
@@ -1549,6 +1566,7 @@
       });
       var cnt = box.querySelector('.mp-train-count');
       if (cnt) cnt.textContent = trains.length;
+      paintTrainHot();
       if (LIST_FILTER.maprun && host.__listRender) host.__listRender();
     }
 
@@ -1617,10 +1635,10 @@
       lastAngle = ang;
       nowMarker.style.transform = 'translate(' + p[0].toFixed(1) + 'px,' + p[1].toFixed(1) + 'px) rotate(' + ang.toFixed(1) + 'deg)';
       var spd = liveSpeed(spec.no, spec.tab, pickLine(spec.st && spec.st[0] ? spec.st[0][1] : ''));
-      var spdText = spd == null ? '' : spd + ' km/h';
+      var spdText = est.dwell ? (esc(est.toName) + '停站') : (spd == null ? '' : spd + ' km/h');
       nowLabel.setAttribute('x', p[0].toFixed(1));
       nowLabel.setAttribute('y', (p[1] - mapTrainK * 1.8 - mapTrainFs * 1.15).toFixed(1));
-      nowLabel.innerHTML = esc(spec.no) + (spdText ? ' <tspan class="spd">' + spdText + '</tspan>' : '');
+      nowLabel.innerHTML = esc(spec.no) + (spdText ? ' <tspan class="spd' + (est.dwell ? ' dwell' : '') + '">' + spdText + '</tspan>' : '');
     }
 
     box.__mapState = function () {
@@ -1743,6 +1761,45 @@
         paths[i].classList.remove('dim');
       }
     }
+  }
+
+  /* 悬停列表车次：地图对应三角与车次号放大 2 倍（停站车也算运行中） */
+  function setTrainHot(el) {
+    if (!el || (el.classList && el.classList.contains('hot'))) return;
+    var txt = el.querySelector('text');
+    if (txt) {
+      var fs = parseFloat(txt.getAttribute('font-size'));
+      if (fs > 0) { el.__hotFs = fs; txt.setAttribute('font-size', (fs * 2).toFixed(1)); }
+    }
+    if (el.classList) el.classList.add('hot');
+  }
+  function clearTrainHot() {
+    var rmap = out.querySelector('.rmap');
+    if (!rmap) return;
+    var els = rmap.querySelectorAll('a.hot, .mp-now.hot');
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i], txt = el.querySelector('text');
+      if (txt && el.__hotFs) { txt.setAttribute('font-size', el.__hotFs); delete el.__hotFs; }
+      el.classList.remove('hot');
+    }
+  }
+  function paintTrainHot() {
+    if (!hotTrainNo) return;
+    var rmap = out.querySelector('.rmap');
+    if (!rmap) return;
+    var links = rmap.querySelectorAll('a[data-pop]');
+    for (var i = 0; i < links.length; i++) {
+      if (links[i].getAttribute('data-pop') === 'tr:' + hotTrainNo) setTrainHot(links[i]);
+    }
+    var now = rmap.querySelector('.mp-now');
+    if (now && S.no === hotTrainNo) setTrainHot(now);
+  }
+  function hlTrain(no) {
+    no = no || '';
+    if (no === hotTrainNo) return;
+    clearTrainHot();
+    hotTrainNo = no;
+    paintTrainHot();
   }
 
   function fillTrainMap(no, tab) {
@@ -2206,6 +2263,7 @@
     if (trainsTimer) { clearInterval(trainsTimer); trainsTimer = null; }
     mapRender = null;
     hotLine = '';
+    hotTrainNo = '';
     out.__listRender = null;
     var r;
     if (S.kind === 'train') r = trainView();
@@ -2241,10 +2299,15 @@
 
   /* 列表里的瞬时速度：放在当前线路信息前，停站显示红色“停站”，每秒刷新文字 */
   var spdTick = null;
+  function isDwellText(txt) { return !!txt && txt.indexOf('停站') >= 0; }
+
   function spdText(no, tab) {
     var seg = liveSegment(no, tab);
     if (!seg) return null;
-    if (seg.from === seg.to) return '停站';
+    if (seg.from === seg.to) {
+      var st = TR[no] && TR[no][tab] || [];
+      return stName(st[seg.from] ? st[seg.from][0] : seg.from) + '停站';
+    }
     var v = liveSpeed(no, tab);
     return v == null ? '' : v + ' km/h';
   }
@@ -2268,7 +2331,7 @@
           if (lin && route && lin.innerHTML !== route) lin.innerHTML = route;
         }
         if (el.textContent !== txt) el.textContent = txt;
-        if (el.classList) el.classList.toggle('dwell', txt === '停站');
+        if (el.classList) el.classList.toggle('dwell', isDwellText(txt));
       }
     }, 1000);
   }
@@ -2281,7 +2344,7 @@
     startSpdTick();
     return '<span class="lv">' +
       '<span class="lvtop"><span class="lvhd">当前状态：</span>' +
-      '<span class="lvspd' + (txt === '停站' ? ' dwell' : '') + '" data-spd-no="' + esc(no) +
+      '<span class="lvspd' + (isDwellText(txt) ? ' dwell' : '') + '" data-spd-no="' + esc(no) +
       '" data-spd-tab="' + tab + '">' + (txt || '') + '</span></span>' +
       '<span class="lvin">' + r + '</span></span>';
   }
@@ -2289,7 +2352,7 @@
   function resTrain(no, attrs) {
     var v = TR[no][0];
     return '<li><a href="#" data-k="' + esc(no) + '"' + (attrs || '') + '><b>' + runDot(no) + esc(no) + '</b>' +
-      '<span class="rt">' + esc(stName(v[0][0])) + ' → ' + esc(stName(v[v.length - 1][0])) + '</span>' +
+      rtSpan(stName(v[0][0]), stName(v[v.length - 1][0]), no, 0) +
       liveSpan(no, 0) +
       '<span class="rm">' + num(v[v.length - 1][2]) + ' km · ' + v.length + ' 站</span></a></li>';
   }
@@ -2419,8 +2482,23 @@
     return out;
   }
 
+  function paintHeadStatus(no, tab) {
+    var box = out.querySelector('.tstatus');
+    if (!box) return;
+    var txt = spdText(no, tab);
+    var sp = box.querySelector('.ts-spd'), rt = box.querySelector('.ts-route');
+    if (txt == null) { box.style.display = 'none'; return; }
+    box.style.display = '';
+    if (sp) {
+      sp.textContent = txt;
+      if (sp.classList) sp.classList.toggle('dwell', isDwellText(txt));
+    }
+    if (rt) rt.innerHTML = liveRoute(no, tab) || '';
+  }
+
   function paintLiveRows(no, tab) {
     var live = liveSegment(no, tab);
+    paintHeadStatus(no, tab);
     var hd = out.querySelector('.head .no');
     if (hd) {
       var dot = hd.querySelector('.run-dot');
@@ -2472,6 +2550,11 @@
       mapBtn() +
       '<span class="meta">' + num(last[2]) + ' km · ' + st.length + ' 站</span>' +
       '</div>';
+
+    var headStatus = '<div class="tstatus">' +
+      '<span class="ts-time">时刻 <b>' + tripTimes(no, tab) + '</b></span>' +
+      ' · 当前状态：<span class="ts-spd"></span>' +
+      ' · <span class="ts-route"></span></div>';
 
     var strip = '';
     if (bIdx >= 0) {
@@ -2551,7 +2634,7 @@
     var note = hasT ? '<div class="note">到点 / 发点为办客站时刻，<b>+1</b> 表示次日；' +
       '「—」为途经不办客站（无到发时刻）。均速列为相邻两个办客站之间的平均时速，停站时间不计。</div>' : '';
 
-    out.innerHTML = '<section class="card' + (MAP_OPEN ? '' : ' mapoff') + '">' + head +
+    out.innerHTML = '<section class="card' + (MAP_OPEN ? '' : ' mapoff') + '">' + head + headStatus +
       '<div class="chips" id="chips"></div>' +
       strip + tabs + note +
       '<div class="cols"><div class="colmain"><div class="tw"><table><thead><tr><th class="n">#</th><th>车站</th>' +
@@ -2733,7 +2816,7 @@
       var info = atStation(no, sid);
       var e = timeAt(no, info.vi, info.k);
       return '<li><a href="#" data-k="' + esc(no) + '" data-hl="' + sid + '"><b>' + runDot(no) + esc(no) + '</b>' +
-        '<span class="rt">' + esc(stName(info.from)) + ' → ' + esc(stName(info.to)) + '</span>' +
+        rtSpan(stName(info.from), stName(info.to), no, info.vi) +
         liveSpan(no, info.vi) +
         (e ? '<span class="tm">' + fmtT(e[1]) + ' / ' + fmtT(e[2]) + '</span>' : '') +
         '<span class="rm">第 ' + (info.k + 1) + ' 站 · ' + num(info.km) + ' km</span></a></li>';
@@ -2750,7 +2833,7 @@
     var h = '<ul class="res">' + filtered.slice(0, MAX_LIST).map(function (x) {
       var v = TR[x.no][0];
       return '<li><a href="#" data-k="' + esc(x.no) + '"><b>' + runDot(x.no) + esc(x.no) + '</b>' +
-        '<span class="rt">' + esc(stName(v[0][0])) + ' → ' + esc(stName(v[v.length - 1][0])) + '</span>' +
+        rtSpan(stName(v[0][0]), stName(v[v.length - 1][0]), no, 0) +
         liveSpan(x.no, 0) +
         '<span class="rm">经 ' + x.n + ' 站</span></a></li>';
     }).join('') + '</ul>';
@@ -2836,7 +2919,7 @@
       html += '<ul class="res">' + list.slice(0, MAX_LIST).map(function (no) {
         var v = TR[no][0];
         return '<li><a href="#" data-k="' + esc(no) + '"><b>' + runDot(no) + esc(no) + '</b>' +
-          '<span class="rt">' + esc(stName(v[0][0])) + ' → ' + esc(stName(v[v.length - 1][0])) + '</span>' +
+          rtSpan(stName(v[0][0]), stName(v[v.length - 1][0]), no, 0) +
           liveSpan(no, 0) +
           '<span class="rm">' + v.length + ' 站 · ' + num(v[v.length - 1][2]) + ' km</span></a></li>';
       }).join('') + '</ul>';
@@ -3051,11 +3134,17 @@
   out.addEventListener('mouseover', function (e) {
     var t = e.target.closest('[data-hl]');
     if (t) hlLine(t.getAttribute('data-hl'));
+    var row = e.target.closest('.res li a[data-k]');
+    if (row && !(e.relatedTarget && row.contains(e.relatedTarget))) {
+      hlTrain(row.getAttribute('data-k'));
+    }
   });
 
   out.addEventListener('mouseout', function (e) {
     var t = e.target.closest('[data-hl]');
     if (t && !(e.relatedTarget && t.contains(e.relatedTarget))) clearHl();
+    var row = e.target.closest('.res li a[data-k]');
+    if (row && !(e.relatedTarget && row.contains(e.relatedTarget))) hlTrain('');
   });
 
   out.addEventListener('click', function (e) {
