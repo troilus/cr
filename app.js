@@ -1122,8 +1122,11 @@
           if (tm[pi][2] === s.dep && tm[pi + 1][1] === s.arr) { prof = segProfile(spec.no, spec.tab || 0, pi); break; }
         }
         if (prof) f = profileAt(prof, t - s.dep).f;
-        var arc = prof ? prof.arc : arcOfPts(s.pts);
-        var p = pointAtArc(arc, f);
+        /* 速度曲线可能选了和地图不同的几何：按几何长度折算到地图实际画的折线上 */
+        var drawArc = arcOfPts(s.pts);
+        var fDraw = (prof && prof.arc && prof.arc.total > 0)
+          ? (f * prof.arc.total) / (drawArc.total || 1) : f;
+        var p = pointAtArc(drawArc, fDraw);
         var st = spec.st || [];
         var km = (st[s.from] && st[s.to]) ? st[s.from][2] + f * (st[s.to][2] - st[s.from][2]) : 0;
         var seg = kmSegment(st, km);
@@ -1132,7 +1135,7 @@
         var segAngle = stationAngle(fromName, toName);
         return p ? {
           lat: p[0], lon: p[1], t: t,
-          angle: segAngle == null ? angleAtArc(arc, f) : segAngle,
+          angle: segAngle == null ? angleAtArc(drawArc, fDraw) : segAngle,
           fromName: fromName, toName: toName,
           dwell: false, atStation: seg ? seg.at : false
         } : null;
