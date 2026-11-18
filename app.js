@@ -1212,7 +1212,7 @@
     if (km >= st[st.length - 1][2]) return { from: st.length - 1, to: st.length - 1, at: true };
     var i;
     for (i = 0; i < st.length; i++) {
-      if (Math.abs(st[i][2] - km) <= 0.5) return { from: i, to: i, at: true };
+      if (Math.abs(st[i][2] - km) <= 0.05) return { from: i, to: i, at: true };
     }
     for (i = 0; i < st.length - 1; i++) {
       if (km >= st[i][2] && km <= st[i + 1][2]) return { from: i, to: i + 1, at: false };
@@ -2059,25 +2059,44 @@
     var list = ensureIndex()[sid] || [];
     var pos = runningTrainsFor(list);
     var intervals = [], seen = {};
+    function addIv(L, a, b) {
+      if (!L || !a || !b || a === b) return;
+      var kk = [a, b].sort().join('|');
+      var key = L + '|' + kk;
+      if (seen[key]) return;
+      seen[key] = 1;
+      var pts = lineIntervalPts(L, a, b);
+      if (!pts || pts.length < 2) return;
+      intervals.push({ line: L, a: a, b: b, pts: pts, box: intervalBox(pts) });
+    }
     for (var L in lines) {
       var via = LST[L] || [];
       for (var i = 0; i < via.length; i++) {
         if (via[i][0] !== nm) continue;
-        var pairs = [];
-        if (i > 0) pairs.push([i - 1, i]);
-        if (i + 1 < via.length) pairs.push([i, i + 1]);
-        pairs.forEach(function (pair) {
-          var a = via[pair[0]], b = via[pair[1]];
-          if (!a || !b) return;
-          var key = L + '|' + a[0] + '|' + b[0];
-          if (seen[key]) return;
-          seen[key] = 1;
-          var pts = lineIntervalPts(L, a[0], b[0]);
-          if (!pts) return;
-          intervals.push({ line: L, a: a[0], b: b[0], pts: pts, box: intervalBox(pts) });
-        });
+        if (i > 0) addIv(L, via[i - 1][0], nm);
+        if (i + 1 < via.length) addIv(L, nm, via[i + 1][0]);
       }
     }
+    /* 有车停在相邻区间端点外一站时，补上连接区间，让线能画到车所在站（只补一站，且不超过 15 km） */
+    var ends = {};
+    intervals.forEach(function (iv) { ends[iv.a] = 1; ends[iv.b] = 1; });
+    pos.forEach(function (p) {
+      if (p.fromName !== p.toName || ends[p.fromName]) return;
+      var sl = stationLineIndex()[p.fromName] || {};
+      for (var L2 in sl) {
+        var via2 = LST[L2] || [], i2 = -1;
+        for (var j = 0; j < via2.length; j++) if (via2[j][0] === p.fromName) { i2 = j; break; }
+        if (i2 < 0) continue;
+        [via2[i2 - 1], via2[i2 + 1]].forEach(function (nb) {
+          if (!nb || !ends[nb[0]]) return;
+          var A = RAIL.s && RAIL.s[nb[0]], B = RAIL.s && RAIL.s[p.fromName];
+          if (!A || !B) return;
+          var dy = A[0] - B[0], dx = (A[1] - B[1]) * Math.cos(A[0] * Math.PI / 180);
+          if (Math.sqrt(dx * dx + dy * dy) * 111 > 15) return;
+          addIv(L2, nb[0], p.fromName);
+        });
+      }
+    });
     intervals.forEach(function (iv) {
       iv.trains = pos.filter(function (p) {
         return p.line === iv.line && inInterval(p, iv);
@@ -2087,9 +2106,9 @@
   }
 
   function stationLineKey(data) {
-    var arr = [];
-    data.intervals.forEach(function (iv) { if (arr.indexOf(iv.line) < 0) arr.push(iv.line); });
-    return arr.sort().join('|');
+    var arr = data.intervals.map(function (iv) { return iv.line + '|' + iv.a + '|' + iv.b; });
+    arr.sort();
+    return arr.join('|');
   }
 
   function fillStationMap(sid, keep) {
@@ -2597,7 +2616,7 @@
     if (!withEta) return { txt: v == null ? '' : v + 'km/h', dwell: false };
     var ns = nextStop(no, tab);
     return { txt: (v == null ? '—' : v + 'km/h') + '→预计' +
-      (ns ? fmtPlain(ns.arr) + '抵达' + ns.name : '—'), dwell: false };
+      (ns ? fmtPlain(ns.arr, true) + '抵达' + ns.name : '—'), dwell: false };
   }
 
   function spdText(no, tab) {
@@ -3430,7 +3449,7 @@
         liveSpan(no, info.vi) +
         (e ? '<span class="tm">' + fmtT(e[1]) + ' / ' + fmtT(e[2]) + '</span>' : '') +
         '<span class="rm">第 ' + (info.k + 1) + ' 站 · ' +
-        (pt != null ? fmtPlain(Math.round(pt)) + ' · ' : '') + num(info.km) + ' km</span></a></li>';
+        (pt != null ? fmtPlain(Math.round(pt), true) + ' · ' : '') + num(info.km) + ' km</span></a></li>';
     }).join('') + '</ul>';
     h += moreHtml(filtered.length);
     return h;
