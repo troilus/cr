@@ -2265,128 +2265,196 @@
     return m ? +m[1] : 0;
   }
 
-  /* ---- 分段速度曲线：几何曲率 + 进出站限速 + 车型加减速 + 时刻表对齐 ---- */
+  /* ---- 速度曲线：车型阶梯加减速 + 逐线路限速包络 + 时刻表精确拟合 ---- */
   var PROF_CACHE = {};
-  function trainDynamics(no) {
-    var c = String(no).charAt(0).toUpperCase();
-    if ('GDC'.indexOf(c) >= 0) return { a: 0.6, b: 0.7 };
-    if ('ZT'.indexOf(c) >= 0) return { a: 0.35, b: 0.4 };
-    return { a: 0.45, b: 0.5 };
+  /* 动车组与普速两套阶梯牵引/制动特性：[[速度上限 km/h, 加速度 m/s²], ...] */
+  var SPEED_MODELS = {
+    emu: { acc: [[120, 0.35], [200, 0.25], [1e9, 0.15]], brk: [[1e9, 0.45], [160, 0.38], [60, 0.30]], vmax: 350 },
+    conv: { acc: [[40, 0.14], [80, 0.09], [1e9, 0.05]], brk: [[1e9, 0.22], [80, 0.24], [30, 0.26]], vmax: 160 }
+  };
+  /* 阶梯加减速铺不满区间时逐级加陡（允许加速度跳变） */
+  var ACCEL_SCALES = [1, 1.5, 2, 4, 8, 16, 32, 64, 1e6];
+
+  /* S 字头为市域动车组 */
+  function trainKind(no) {
+    return 'GDCS'.indexOf(String(no).charAt(0).toUpperCase()) >= 0 ? 'emu' : 'conv';
   }
 
-  function turnoutSpeed(line) {
-    var v = lineSpeedLimit(line);
-    if (v >= 250) return 140;
-    if (v >= 160) return 80;
-    return 45;
+  function modelFor(kind, k) {
+    var m = SPEED_MODELS[kind];
+    if (!k || k === 1) return m;
+    return {
+      acc: m.acc.map(function (x) { return [x[0], x[1] * k]; }),
+      brk: m.brk.map(function (x) { return [x[0], x[1] * k]; }),
+      vmax: m.vmax
+    };
   }
 
-  function nextSpeed(vKmh, ds, a) {
-    var v = vKmh / 3.6;
-    return Math.sqrt(Math.max(0, v * v + 2 * a * Math.max(0, ds))) * 3.6;
+  /* 从 0 加速到 v（m/s）的距离，单位 m */
+  function accelDist(v, m) {
+    var s = 0, u = 0;
+    for (var i = 0; i < m.acc.length; i++) {
+      var w = Math.min(v, m.acc[i][0] / 3.6);
+      if (w > u) { s += (w * w - u * u) / (2 * m.acc[i][1]); u = w; }
+      if (u >= v) break;
+    }
+    return s;
+  }
+
+  /* 从 v0 加速 dx 米后的速度，单位 m/s */
+  function accelAfter(v0, dx, m) {
+    var target = accelDist(v0, m) + dx, s = 0, u = 0;
+    for (var i = 0; i < m.acc.length; i++) {
+      var hi = m.acc[i][0] / 3.6, ds = (hi * hi - u * u) / (2 * m.acc[i][1]);
+      if (s + ds >= target) return Math.sqrt(u * u + 2 * m.acc[i][1] * (target - s));
+      s += ds; u = hi;
+    }
+    return u;
+  }
+
+  /* 要制动到 u 且还剩 dx 米时，此刻允许的最高速度 m/s */
+  function brakeBefore(u, dx, m) {
+    var s = 0, lo = u;
+    for (var i = m.brk.length - 1; i >= 0; i--) {
+      var hi = m.brk[i][0] / 3.6, b = m.brk[i][1];
+      if (hi <= lo) continue;
+      var ds = (hi * hi - lo * lo) / (2 * b);
+      if (s + ds >= dx) return Math.sqrt(lo * lo + 2 * b * (dx - s));
+      s += ds; lo = hi;
+    }
+    return lo;
+  }
+
+  /* 把当前办客区间按线路拆成限速段（同限速相邻段合并） */
+  function segZones(no, tab, si) {
+    var st = TR[no] && TR[no][tab], tm = TM[no] && TM[no][tab] || [];
+    var a = tm[si], b = tm[si + 1];
+    if (!st || !a || !b || a[2] == null || b[1] == null || a[0] === b[0]) return null;
+    var schedT = b[1] - a[2];
+    if (!(schedT > 0)) return null;
+    var kind = trainKind(no), cap = SPEED_MODELS[kind].vmax;
+    var zones = [], dist = 0, last = null;
+    for (var i = a[0] + 1; i <= b[0]; i++) {
+      var d = st[i][2] - st[i - 1][2];
+      if (!(d > 0)) return null;
+      var lim = lineSpeedLimit(pickLine(st[i][1]));
+      var c = Math.min(cap, lim > 0 ? lim : cap);
+      if (last && last.cap === c) last.d += d;
+      else zones.push(last = { d: d, cap: c });
+      dist += d;
+    }
+    if (!(dist > 0) || !zones.length) return null;
+    return { zones: zones, dist: dist, schedT: schedT, kind: kind, cap: cap };
+  }
+
+  /* 限速包络 + 前向积分；按该特性铺不满时刻表时返回 null */
+  function buildRun(zones, T, clsKmh, model, N) {
+    var dist = 0, i;
+    for (i = 0; i < zones.length; i++) dist += zones[i].d;
+    var Dm = dist * 1000, step = Dm / N;
+    var caps = new Float64Array(N + 1);
+    var ci = 0, acc = 0, rd = zones[0].d * 1000;
+    for (i = 0; i <= N; i++) {
+      var x = i * step;
+      while (ci < zones.length - 1 && x > acc + rd - 1e-9) { acc += rd; ci++; rd = zones[ci].d * 1000; }
+      caps[i] = Math.min(clsKmh, zones[ci].cap) / 3.6;
+    }
+    /* 反向包络：必须能在到站前刹停，进低限速段前提前降速 */
+    var env = new Float64Array(N + 1);
+    env[N] = 0;
+    for (i = N - 1; i >= 0; i--) env[i] = Math.min(caps[i], brakeBefore(env[i + 1], step, model));
+
+    function sim(cruise, vs, ts) {
+      var v = 0, t = 0;
+      for (var j = 0; j < N; j++) {
+        var vn = Math.min(accelAfter(v, step, model), env[j + 1], cruise);
+        if (vn < 0) vn = 0;
+        t += v <= 0 ? (vn > 0 ? 2 * step / vn : 1e9) : 2 * step / (v + vn);
+        v = vn;
+        if (vs) { vs[j + 1] = v * 3.6; ts[j + 1] = t; }
+      }
+      return t;
+    }
+
+    var top = clsKmh / 3.6;
+    if (T < sim(top) - 0.5) return null;
+    var lo = 0, hi = top;
+    for (i = 0; i < 22; i++) {
+      var mid = (lo + hi) / 2;
+      if (sim(mid) > T) lo = mid; else hi = mid;
+    }
+    var vs = new Float64Array(N + 1), ts = new Float64Array(N + 1);
+    sim((lo + hi) / 2, vs, ts);
+    return { vs: vs, ts: ts, N: N, step: step, dist: dist };
   }
 
   function segProfile(no, tab, si) {
     tab = tab || 0;
-    var st = TR[no] && TR[no][tab], tm = TM[no] && TM[no][tab] || [];
-    if (!st || !tm[si] || !tm[si + 1]) return null;
-    var a = tm[si], b = tm[si + 1];
-    if (a[2] == null || b[1] == null || a[0] === b[0]) return null;
-    var key = no + '|' + tab + '|' + si + '|' + a[2] + '|' + b[1];
-    if (PROF_CACHE[key]) return PROF_CACHE[key];
-    var aName = stName(st[a[0]][0]), bName = stName(st[b[0]][0]);
-    var pa = RAIL && RAIL.s && RAIL.s[aName], pb = RAIL && RAIL.s && RAIL.s[bName];
-    if (!pa || !pb) return null;
-    var chosen = chooseSegLine(aName, bName, pa, pb, st[a[0]][1], st[b[0]][1]);
-    var line = chosen ? chosen.line : pickLine(st[a[0]][1]);
-    var pts = chosen && chosen.pts ? chosen.pts : [pa, pb];
-    /* 两点直线时首尾限速会把整段压成 0，先插值出中间采样点 */
-    if (pts.length < 3) {
-      var dense = [pts[0]], nSample = 24;
-      for (var j = 1; j < nSample; j++) {
-        var fr = j / nSample;
-        dense.push([pts[0][0] + (pts[1][0] - pts[0][0]) * fr,
-          pts[0][1] + (pts[1][1] - pts[0][1]) * fr]);
-      }
-      dense.push(pts[1]);
-      pts = dense;
-    }
-    var S = [0];
-    for (var i = 1; i < pts.length; i++) S.push(S[i - 1] + Math.sqrt(d2(pts[i - 1], pts[i])) * 111320);
-    var totalM = S[S.length - 1];
-    if (!(totalM > 0)) return null;
-    var dyn = trainDynamics(no), limit = lineSpeedLimit(line) || 160, vturn = turnoutSpeed(line);
-    var lim = [], v = [], t = [0];
-    for (i = 0; i < pts.length; i++) {
-      var lc = limit, dEnd = totalM - S[i];
-      var r = 20000;
-      if (i > 0 && i < pts.length - 1) {
-        var v1 = [pts[i][0] - pts[i - 1][0], (pts[i][1] - pts[i - 1][1]) * Math.cos(pts[i][0] * Math.PI / 180)];
-        var v2 = [pts[i + 1][0] - pts[i][0], (pts[i + 1][1] - pts[i][1]) * Math.cos(pts[i][0] * Math.PI / 180)];
-        var n1 = Math.hypot(v1[0], v1[1]), n2 = Math.hypot(v2[0], v2[1]);
-        if (n1 > 1e-9 && n2 > 1e-9) {
-          var dot = Math.max(-1, Math.min(1, (v1[0] * v2[0] + v1[1] * v2[1]) / (n1 * n2)));
-          var ang = Math.acos(dot), ds = (n1 + n2) / 2 * 111320;
-          if (ang > 0.0005) r = Math.max(200, Math.min(20000, ds / ang));
-        }
-      }
-      lc = Math.min(lc, 3.9 * Math.sqrt(r));
-      if (S[i] < 1000) lc = Math.min(lc, vturn);
-      if (dEnd < 1000) {
-        lc = Math.min(lc, vturn, 3.6 * Math.sqrt(2 * dyn.b * Math.max(0, dEnd)));
-        if (dEnd < 200) lc = Math.min(lc, 20, 3.6 * Math.sqrt(2 * dyn.b * Math.max(0, dEnd)));
-      }
-      lim.push(Math.max(0, lc));
-    }
-    v[0] = 0;
-    for (i = 1; i < pts.length; i++) v[i] = Math.min(lim[i], nextSpeed(v[i - 1], S[i] - S[i - 1], dyn.a));
-    v[v.length - 1] = 0;
-    for (i = pts.length - 2; i >= 0; i--) v[i] = Math.min(v[i], nextSpeed(v[i + 1], S[i + 1] - S[i], dyn.b));
-    for (i = 1; i < pts.length; i++) {
-      var vv = (v[i - 1] + v[i]) / 2 / 3.6;
-      t.push(t[i - 1] + (vv > 0 ? (S[i] - S[i - 1]) / vv / 60 : 0));
-    }
-    var modelT = t[t.length - 1], schedT = b[1] - a[2];
-    if (modelT > 0 && schedT > 0 && modelT < schedT) {
-      var k = modelT / schedT, lv = lim.map(function (x) { return x * k; });
-      v[0] = 0;
-      for (i = 1; i < pts.length; i++) v[i] = Math.min(lv[i], nextSpeed(v[i - 1], S[i] - S[i - 1], dyn.a));
-      v[v.length - 1] = 0;
-      for (i = pts.length - 2; i >= 0; i--) v[i] = Math.min(v[i], nextSpeed(v[i + 1], S[i + 1] - S[i], dyn.b));
-      t = [0];
-      for (i = 1; i < pts.length; i++) {
-        vv = (v[i - 1] + v[i]) / 2 / 3.6;
-        t.push(t[i - 1] + (vv > 0 ? (S[i] - S[i - 1]) / vv / 60 : 0));
+    var key = no + '|' + tab + '|' + si;
+    if (PROF_CACHE[key] !== undefined) return PROF_CACHE[key];
+    var z = segZones(no, tab, si);
+    if (!z) { PROF_CACHE[key] = null; return null; }
+    var N = Math.max(12, Math.min(400, Math.ceil(z.dist / 0.25)));
+    var T = z.schedT * 60, prof = null, k = 0;
+    /* 第一遍按线路限速跑；跑不动说明该段限速标注与时刻表冲突，退回车型上限 */
+    for (var pass = 0; pass < 2 && !prof; pass++) {
+      var zones = pass
+        ? z.zones.map(function (o) { return { d: o.d, cap: z.cap }; })
+        : z.zones;
+      for (var ki = 0; ki < ACCEL_SCALES.length; ki++) {
+        var r = buildRun(zones, T, z.cap, modelFor(z.kind, ACCEL_SCALES[ki]), N);
+        if (r) { prof = r; prof.relaxed = !!pass; k = ACCEL_SCALES[ki]; break; }
       }
     }
-    /* 曲线仍比时刻表快时，把整段按时间拉平到到点，避免到站前提前掉到 0 */
-    if (schedT > 0 && t[t.length - 1] > 0 && t[t.length - 1] < schedT) {
-      var kt = schedT / t[t.length - 1];
-      for (i = 0; i < t.length; i++) t[i] *= kt;
-      for (i = 0; i < v.length; i++) v[i] /= kt;
+    if (prof) {
+      prof.mode = 'ramp';
+      prof.k = k;
+      prof.zones = zones;
+    } else {
+      /* 时刻表比车型上限还快（数据问题）：位置按时间线性推进，速度截到当前段限速 */
+      prof = { mode: 'linear', zones: z.zones, dist: z.dist, relaxed: true };
     }
-    var prof = { line: line, pts: pts, S: S, v: v, t: t, totalM: totalM, totalT: t[t.length - 1], schedT: schedT, arc: arcOfPts(pts), dep: a[2], arr: b[1] };
+    prof.schedT = z.schedT;
+    prof.kind = z.kind;
+    prof.cap = z.cap;
     PROF_CACHE[key] = prof;
     return prof;
   }
 
+  /* 区间内 elapsed（分钟）处的里程比例与瞬时速度 km/h */
   function profileAt(prof, elapsed) {
-    if (!prof || !prof.t || prof.t.length < 2) return { f: 0, v: 0 };
-    var tt = Math.max(0, Math.min(prof.totalT, elapsed || 0));
-    var lo = 0, hi = prof.t.length - 1;
+    if (!prof) return { f: 0, v: 0 };
+    var T = prof.schedT || 0;
+    var tt = Math.max(0, Math.min(T, elapsed || 0));
+    if (prof.mode === 'linear') {
+      var f = T > 0 ? tt / T : 1;
+      var avg = T > 0 ? prof.dist * 60 / T : prof.cap;
+      return { f: f, v: Math.min(zoneCapAt(prof, f), avg) };
+    }
+    var sec = tt * 60, ts = prof.ts, vs = prof.vs;
+    var lo = 0, hi = prof.N;
     while (lo + 1 < hi) {
       var mid = (lo + hi) >> 1;
-      if (prof.t[mid] <= tt) lo = mid; else hi = mid;
+      if (ts[mid] <= sec) lo = mid; else hi = mid;
     }
-    var dtt = prof.t[hi] - prof.t[lo], r = dtt > 0 ? (tt - prof.t[lo]) / dtt : 0;
-    var f = (prof.S[lo] + (prof.S[hi] - prof.S[lo]) * r) / (prof.totalM || 1);
-    if (prof.schedT > 0 && prof.totalT > prof.schedT * 1.02) {
-      f = Math.max(0, Math.min(1, (elapsed || 0) / prof.schedT));
-    }
+    var span = ts[hi] - ts[lo], r = span > 0 ? (sec - ts[lo]) / span : 0;
+    r = Math.max(0, Math.min(1, r));
     return {
-      f: f,
-      v: prof.v[lo] + (prof.v[hi] - prof.v[lo]) * r
+      f: Math.max(0, Math.min(1, (lo + r) / prof.N)),
+      v: vs[lo] + (vs[hi] - vs[lo]) * r
     };
+  }
+
+  /* 里程比例 f 处所在线路段的限速 km/h */
+  function zoneCapAt(prof, f) {
+    var zones = prof.zones || [], dist = prof.dist || 0, acc = 0;
+    if (!(dist > 0) || !zones.length) return prof.cap || 0;
+    var target = Math.max(0, Math.min(1, f)) * dist;
+    for (var i = 0; i < zones.length; i++) {
+      acc += zones[i].d;
+      if (target <= acc || i === zones.length - 1) return Math.min(prof.cap || 0, zones[i].cap);
+    }
+    return prof.cap || 0;
   }
 
   function trainNow(no, tab) {
@@ -2407,8 +2475,8 @@
     for (var i = 0; i < tm.length - 1; i++) {
       var a = tm[i], b = tm[i + 1];
       if (a[2] == null || b[1] == null) continue;
-      if (now >= a[2] && now <= b[1]) return { i: i, e: now - a[2] };
-      if (now > b[1] && b[2] != null && now < b[2]) return { dwell: true, k: b[0] };
+      if (now >= a[2] && now < b[1]) return { i: i, e: now - a[2] };
+      if (now >= b[1] && b[2] != null && now < b[2]) return { dwell: true, k: b[0] };
     }
     return null;
   }
@@ -2432,12 +2500,7 @@
     if (cur.dwell) return 0;
     var prof = segProfile(no, tab, cur.i);
     if (!prof) return null;
-    var v = profileAt(prof, cur.e).v;
-    var lim = lineSpeedLimit(prof.line);
-    if (lim > 0 && v > lim) v = lim;
-    var r = Math.round(v);
-    /* 区间内（非停站）不显示 0 km/h */
-    return r < 1 ? 1 : r;
+    return Math.round(profileAt(prof, cur.e).v);
   }
 
   /* ---------------- 视图 ---------------- */
@@ -2519,7 +2582,7 @@
       for (var li = 0; li < tm.length; li++) {
         if (tm[li][1] != null && (lastArr == null || tm[li][1] > lastArr)) lastArr = tm[li][1];
       }
-      if (lastArr != null && trainNow(no, tab) > lastArr && st.length) {
+      if (lastArr != null && trainNow(no, tab) >= lastArr && st.length) {
         return { txt: '已抵达终点' + stName(st[st.length - 1][0]), dwell: false, arrived: true };
       }
       return null;
@@ -2674,6 +2737,35 @@
     return a[2] + p * (b[2] - a[2]);
   }
 
+  /* 某站预计通过时刻（分钟）：办客站取时刻表，通过站按速度曲线反查，曲线缺失时按里程线性插值 */
+  function passTime(no, tab, k) {
+    tab = tab || 0;
+    var tm = TM[no] && TM[no][tab] || [];
+    var st = TR[no] && TR[no][tab] || [];
+    if (!st.length || !tm.length) return null;
+    var i;
+    for (i = 0; i < tm.length; i++) {
+      if (tm[i][0] === k) return tm[i][1] != null ? tm[i][1] : tm[i][2];
+    }
+    for (i = 0; i < tm.length - 1; i++) {
+      var a = tm[i], b = tm[i + 1];
+      if (k <= a[0] || k >= b[0]) continue;
+      if (a[2] == null || b[1] == null) continue;
+      var ka = st[a[0]] && st[a[0]][2], kb = st[b[0]] && st[b[0]][2], kk = st[k] && st[k][2];
+      if (ka == null || kb == null || kk == null || !(kb > ka)) continue;
+      var f = Math.max(0, Math.min(1, (kk - ka) / (kb - ka)));
+      var prof = segProfile(no, tab, i);
+      if (prof && prof.mode === 'ramp' && prof.ts) {
+        var x = f * prof.N, i0 = Math.floor(x);
+        if (i0 >= prof.N) return b[1];
+        var r = x - i0, t0 = prof.ts[i0], t1 = prof.ts[i0 + 1];
+        return a[2] + (t0 + (t1 - t0) * r) / 60;
+      }
+      return a[2] + (b[1] - a[2]) * f;
+    }
+    return null;
+  }
+
   /* 全程的首个发点 / 末个到点 */
   function tripSpan(tm) {
     var dep = null, arr = null;
@@ -2756,18 +2848,123 @@
     if (!fast.no && cand.length) fast = { no: cand[0].no, v: cand[0].v };
     var tl = topCount(byLine), ts = topCount(byStation);
     var stationTxt = ts.k && ts.k.charAt(ts.k.length - 1) !== '站' ? ts.k + '站' : ts.k;
-    box.innerHTML =
-      '当前运行中车车次：普速 <b>' + pu + '</b> · 动车 <b>' + dv + '</b><br>' +
-      '当前最快列车：<a href="#" data-stat-go="' + esc(fast.no) + '">' + esc(fast.no) + '</a>' +
-      (fast.v >= 0 ? ' <b>' + fast.v + ' km/h</b>' : '') + '<br>' +
-      '当前运行车辆最多线路：' + (tl.k ? '<a href="#" data-stat-go="' + esc(tl.k) + '">' + esc(tl.k) + '</a> <b>' + tl.v + '</b>' : '—') + '<br>' +
-      '当前停站车辆最多：' + (ts.k ? '<a href="#" data-stat-go="' + esc(ts.k) + '">' + esc(stationTxt) + '</a> <b>' + ts.v + '</b>' : '—') + '<br>' +
-      '当前运行时间最长：' + (longest.no ?
+    hdRender([
+      '普速 <b>' + pu + '</b> · 动车 <b>' + dv + '</b>',
+      fast.no ? '<a href="#" data-stat-go="' + esc(fast.no) + '">' + esc(fast.no) + '</a>' +
+        (fast.v >= 0 ? ' <b>' + fast.v + ' km/h</b>' : '') : '—',
+      tl.k ? '<a href="#" data-stat-go="' + esc(tl.k) + '">' + esc(tl.k) + '</a> <b>' + tl.v + '</b>' : '—',
+      ts.k ? '<a href="#" data-stat-go="' + esc(ts.k) + '">' + esc(stationTxt) + '</a> <b>' + ts.v + '</b>' : '—',
+      longest.no ?
         '<a href="#" data-stat-go="' + esc(longest.no) + '">' + esc(longest.no) + '次</a> <b>' + durLong(longest.v) + '</b>' +
-        (longest.rem != null ? '，剩余 ' + durLong(longest.rem) : '') : '—') + '<br>' +
-      '当前运行里程最长：' + (farthest.no ?
+        (longest.rem != null ? '，剩余 ' + durLong(longest.rem) : '') : '—',
+      farthest.no ?
         '<a href="#" data-stat-go="' + esc(farthest.no) + '">' + esc(farthest.no) + '次</a> <b>' + num(Math.round(farthest.v)) + ' km</b>' +
-        (farthest.rem != null ? '，剩余里程 ' + num(Math.round(farthest.rem)) + ' km' : '') : '—');
+        (farthest.rem != null ? '，剩余里程 ' + num(Math.round(farthest.rem)) + ' km' : '') : '—'
+    ]);
+  }
+
+  /* 顶部统计条：固定 6 个槽位 + 两份副本横向循环滚动，5 秒刷新只改文字不重建 DOM */
+  var HD_LABELS = [
+    '当前运行中车车次：', '当前最快列车：', '当前运行车辆最多线路：',
+    '当前停站车辆最多：', '当前运行时间最长：', '当前运行里程最长：'
+  ];
+  var HD_SETS = null;
+
+  function hdInit() {
+    var box = document.getElementById('hdstats');
+    if (!box || !box.querySelectorAll) return null;
+    var html = '<div class="hdtrack">';
+    for (var c = 0; c < 2; c++) {
+      html += '<span class="hdset"' + (c ? ' aria-hidden="true"' : '') + '>';
+      for (var i = 0; i < HD_LABELS.length; i++) {
+        html += '<span class="hdi"><span class="k">' + HD_LABELS[i] + '</span><span class="v"></span></span>';
+      }
+      html += '</span>';
+    }
+    box.innerHTML = html + '</div>';
+    HD_SETS = box.querySelectorAll('.hdset');
+    hdScroll(box);
+    return box;
+  }
+
+  function hdRender(vals) {
+    if (!HD_SETS) hdInit();
+    if (!HD_SETS || !HD_SETS.length) return;
+    for (var c = 0; c < HD_SETS.length; c++) {
+      var set = HD_SETS[c], vs = set.querySelectorAll('.hdi .v');
+      for (var i = 0; i < vs.length && i < vals.length; i++) {
+        if (vs[i].innerHTML !== vals[i]) vs[i].innerHTML = vals[i];
+      }
+      if (c) {
+        var as = set.querySelectorAll('a');
+        for (var j = 0; j < as.length; j++) as[j].tabIndex = -1;
+      }
+    }
+  }
+
+  /* 缓慢横向滚动：到一半宽度回退一半形成无缝循环；悬停/按住暂停 */
+  function hdScroll(box) {
+    if (!box || box.__hdRun || !window.requestAnimationFrame) return;
+    box.__hdRun = true;
+    var paused = false, last = 0;
+    box.addEventListener('mouseenter', function () { paused = true; });
+    box.addEventListener('mouseleave', function () { paused = false; });
+    box.addEventListener('pointerdown', function () { paused = true; });
+    window.addEventListener('pointerup', function () { paused = false; });
+    function tick(t) {
+      if (!paused && !document.hidden) {
+        var half = box.scrollWidth / 2;
+        if (half > box.clientWidth + 4) {
+          if (!last) last = t;
+          box.scrollLeft += Math.min(64, t - last) * 0.022;
+          if (box.scrollLeft >= half) box.scrollLeft -= half;
+        }
+      }
+      last = t;
+      window.requestAnimationFrame(tick);
+    }
+    window.requestAnimationFrame(tick);
+  }
+
+  /* 搜索历史：最近 12 条，去重，点击直接重搜 */
+  var QH_KEY = 'qhist', QH_MAX = 12;
+
+  function qhRead() {
+    try {
+      var a = JSON.parse(localStorage.getItem(QH_KEY) || '[]');
+      if (!Array.isArray(a)) return [];
+      return a.filter(function (x) { return typeof x === 'string' && x; }).slice(0, QH_MAX);
+    } catch (e) { return []; }
+  }
+
+  function qhPush(term) {
+    term = String(term == null ? '' : term).trim();
+    if (!term) return;
+    var a = qhRead().filter(function (x) { return x.toLowerCase() !== term.toLowerCase(); });
+    a.unshift(term);
+    try { localStorage.setItem(QH_KEY, JSON.stringify(a.slice(0, QH_MAX))); } catch (e) { /* noop */ }
+    qhRender();
+  }
+
+  function qhRender() {
+    var box = document.getElementById('qhist');
+    if (!box) return;
+    var a = qhRead();
+    box.hidden = !a.length;
+    box.innerHTML = a.map(function (t) {
+      return '<a class="qchip" href="#" data-qh="' + esc(t) + '">' + esc(t) + '</a>';
+    }).join('');
+  }
+
+  /* 只有能搜到东西的查询才记历史 */
+  function qhRecord(p) {
+    if (!p || p.kind === 'empty') return;
+    if (p.kind === 'results') {
+      var raw = p.raw || '';
+      if (!matchTrains(norm(raw)).total && !matchStations(raw).total && !matchLines(raw).total &&
+          !(META && matchBu(raw).total)) return;
+    }
+    qhPush(p.kind === 'train' ? p.no : p.raw);
   }
 
   function runDot(no, tab) {
@@ -3227,11 +3424,13 @@
     var h = '<ul class="res">' + filtered.slice(0, LIST_LIMIT).map(function (no) {
       var info = atStation(no, sid);
       var e = timeAt(no, info.vi, info.k);
+      var pt = e ? (e[1] != null ? e[1] : e[2]) : passTime(no, info.vi, info.k);
       return '<li><a href="#" data-k="' + esc(no) + '" data-hl="' + sid + '"><b>' + runDot(no) + esc(no) + '</b>' +
         rtSpan(stName(info.from), stName(info.to), no, info.vi) +
         liveSpan(no, info.vi) +
         (e ? '<span class="tm">' + fmtT(e[1]) + ' / ' + fmtT(e[2]) + '</span>' : '') +
-        '<span class="rm">第 ' + (info.k + 1) + ' 站 · ' + num(info.km) + ' km</span></a></li>';
+        '<span class="rm">第 ' + (info.k + 1) + ' 站 · ' +
+        (pt != null ? fmtPlain(Math.round(pt)) + ' · ' : '') + num(info.km) + ' km</span></a></li>';
     }).join('') + '</ul>';
     h += moreHtml(filtered.length);
     return h;
@@ -3477,7 +3676,7 @@
     setHash('#' + encodeURIComponent(no), true);
   }
 
-  function go(raw) {
+  function go(raw, fromSearch) {
     var p = parse(raw);
     LIST_LIMIT = MAX_LIST;
     hideAc();
@@ -3488,6 +3687,7 @@
       return;
     }
     q.value = p.kind === 'train' ? p.no : p.raw;
+    if (fromSearch) qhRecord(p);
     paint();
     setHash(p.kind === 'train' ? '#' + encodeURIComponent(p.no)
       : '#?q=' + encodeURIComponent(p.raw), true);
@@ -3517,12 +3717,12 @@
     else if (e.key === 'ArrowUp') { e.preventDefault(); moveAc(-1); }
     else if (e.key === 'Enter') {
       e.preventDefault();
-      if (active >= 0 && items[active]) go(items[active].v);
-      else go(q.value);
+      if (active >= 0 && items[active]) go(items[active].v, true);
+      else go(q.value, true);
     } else if (e.key === 'Escape') { hideAc(); }
   });
 
-  goBtn.addEventListener('click', function () { go(q.value); });
+  goBtn.addEventListener('click', function () { go(q.value, true); });
 
   clr.addEventListener('click', function () {
     q.value = '';
@@ -3535,7 +3735,7 @@
 
   ac.addEventListener('mousedown', function (e) {
     var li = e.target.closest('li');
-    if (li) { e.preventDefault(); go(li.getAttribute('data-i')); }
+    if (li) { e.preventDefault(); go(li.getAttribute('data-i'), true); }
   });
 
   out.addEventListener('mouseover', function (e) {
@@ -3608,6 +3808,16 @@
     });
   }
 
+  var qhBox = document.getElementById('qhist');
+  if (qhBox) {
+    qhBox.addEventListener('click', function (e) {
+      var a = e.target.closest && e.target.closest('a[data-qh]');
+      if (!a) return;
+      e.preventDefault();
+      go(a.getAttribute('data-qh'), true);
+    });
+  }
+
   document.addEventListener('click', function (e) {
     if (!ac.contains(e.target) && e.target !== q) hideAc();
     /* 浮窗：点外面关掉（触发浮窗的元素自己会重新打开，交给 out 的处理器） */
@@ -3636,13 +3846,14 @@
 
   /* ---------------- 初始化 ---------------- */
   hint.innerHTML = '共 <b>' + num(KEYS.length) + '</b> 个车次 · ' + num(ST.length) +
-    ' 个车站 · ' + num(N_LN) + ' 条线路，支持车次、站名、拼音、线路与「A 到 B」区间查询';
+    ' 个车站 · ' + num(N_LN) + ' 条线路';
   hint.querySelector('b').addEventListener('click', function () { q.focus(); });
 
   ft.innerHTML = '构建于 ' + esc(D.built);
 
   syncFromHash();
   updateHdStats();
+  qhRender();
   if (typeof setInterval === 'function') {
     setInterval(updateHdStats, 5000);
     /* 后台补线路几何，让「当前最快列车」用瞬时速度而不是时刻表均速 */

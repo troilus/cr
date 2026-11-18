@@ -27,14 +27,26 @@
   .hd .sub{margin:4px 0 16px;color:var(--muted);font-size:13px}
   .hdrow{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}
   .hdmain{min-width:0}
-  .hdstats{
-    flex:0 0 auto;text-align:right;
-    font-size:12px;line-height:1.75;color:var(--muted);
-    padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);
+  .hdbar{
+    margin:0 0 12px;border:1px solid var(--line);border-radius:8px;
+    background:var(--card);overflow:hidden;
   }
-  .hdstats b{color:var(--text);font-weight:600}
-  .hdstats a{color:var(--accent);text-decoration:none}
-  .hdstats a:hover{text-decoration:underline}
+  .hdstats{
+    overflow-x:auto;overflow-y:hidden;white-space:nowrap;
+    font-size:12px;line-height:2;color:var(--muted);
+    padding:3px 0;scrollbar-width:none;-ms-overflow-style:none;
+  }
+  .hdstats::-webkit-scrollbar{display:none}
+  .hdtrack{display:inline-block;white-space:nowrap}
+  .hdset{display:inline-block}
+  .hdi{display:inline-block;padding:0 9px}
+  .hdi::before{
+    content:"";display:inline-block;width:5px;height:5px;margin-right:6px;
+    border-radius:50%;background:#16a34a;vertical-align:1px;
+  }
+  .hdi b{color:var(--text);font-weight:600}
+  .hdi a{color:var(--accent);text-decoration:none}
+  .hdi a:hover{text-decoration:underline}
   .box{position:relative;display:flex;gap:8px}
   .box input{
     flex:1;min-width:0;height:44px;padding:0 14px;font-size:16px;
@@ -64,6 +76,17 @@
   .hint{margin-top:10px;font-size:13px;color:var(--muted)}
   .hint b{color:var(--text);cursor:pointer;border-bottom:1px dashed var(--line)}
   .hint b:hover{color:var(--accent);border-color:var(--accent)}
+  .qhist{
+    display:flex;gap:6px;overflow-x:auto;margin-top:10px;
+    scrollbar-width:none;-ms-overflow-style:none;
+  }
+  .qhist[hidden]{display:none}
+  .qhist::-webkit-scrollbar{display:none}
+  .qchip{
+    flex:0 0 auto;padding:3px 10px;border:1px solid var(--line);border-radius:999px;
+    background:var(--card);color:#4b5563;font-size:12px;text-decoration:none;white-space:nowrap;
+  }
+  .qchip:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
 
   /* ---------- 结果卡 ---------- */
   main{padding:22px 0 8px}
@@ -475,7 +498,7 @@
 
   @media (max-width:1000px){
     .hdrow{display:block}
-    .hdstats{text-align:left;margin:0 0 10px;display:inline-block}
+    .hdbar{margin:0 0 10px}
     .cols{grid-template-columns:1fr}
     .mapcol{
       order:-1;border-left:0;border-bottom:1px solid var(--line);
@@ -536,8 +559,8 @@
         <h1>列车经由查询</h1>
         <p class="sub">输入车次、车站或线路，查看经由、线路与累计里程；也可以查「A 到 B」区间</p>
       </div>
-      <div class="hdstats" id="hdstats"></div>
     </div>
+    <div class="hdbar"><div class="hdstats" id="hdstats"></div></div>
     <div class="box">
       <input id="q" type="search" placeholder="车次 / 站名 / 线路，如 D366、武汉、京广线"
              autocomplete="off" autocapitalize="characters" spellcheck="false" enterkeyhint="search">
@@ -545,6 +568,7 @@
       <button id="clr" type="button" class="sec">清空</button>
       <ul id="ac" class="ac" hidden></ul>
     </div>
+    <div class="qhist" id="qhist" hidden></div>
     <div class="hint" id="hint"></div>
   </div>
 </header>
