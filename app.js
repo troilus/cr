@@ -93,6 +93,11 @@
     return pad2(Math.floor(m / 60)) + ':' + pad2(m % 60) +
       (d > 0 ? '<i class="d">+' + d + '</i>' : '');
   }
+  function fmtPlain(v) {
+    if (v == null) return '';
+    var d = Math.floor(v / 1440), m = v - 1440 * d;
+    return pad2(Math.floor(m / 60)) + ':' + pad2(m % 60) + (d > 0 ? '+' + d : '');
+  }
   function durTxt(m) {
     var d = Math.floor(m / 1440), r = m - 1440 * d;
     return (d ? d + ' 天 ' : '') + Math.floor(r / 60) + ':' + pad2(r % 60);
@@ -570,10 +575,9 @@
     if (!TR[no]) return '<div class="pp">没有这个车次。</div>';
     var tab = runningTab(no), v = TR[no][tab] || TR[no][0];
     var a = stName(v[0][0]), b = stName(v[v.length - 1][0]);
-    var txt = spdText(no, tab), route = liveRoute(no, tab);
+    var txt = spdText(no, tab);
     var stHtml = txt == null ? '—' :
-      '<span class="tp-spd' + (isDwellText(txt) ? ' dwell' : '') + '">' + esc(txt) + '</span>' +
-      (route ? ' · <span class="tp-route">' + route + '</span>' : '');
+      '<span class="tp-spd' + (isDwellText(txt) ? ' dwell' : '') + '">' + esc(txt) + '</span>';
     return '<div class="pp tp">' +
       '<div class="tp-rt">' + esc(a) + '<i>→</i>' + esc(b) + '</div>' +
       '<div class="tp-tm">时刻 <b>' + tripTimes(no, tab) + '</b></div>' +
@@ -1469,9 +1473,9 @@
         var ex = X([est.lat, est.lon]), ey = Y([est.lat, est.lon]);
         var tri = trainK, ang0 = est.angle || 0;
         lastAngle = ang0;
-        var spd = liveSpeed(spec.no, spec.tab, pickLine(spec.st && spec.st[0] ? spec.st[0][1] : ''));
-        var spdText = est.dwell ? (esc(est.toName) + '停站') : (spd == null ? '' : spd + ' km/h');
-        var noTxt = esc(spec.no) + (spdText ? ' <tspan class="spd' + (est.dwell ? ' dwell' : '') + '">' + spdText + '</tspan>' : '');
+        var stat = liveStatus(spec.no, spec.tab);
+        var spdText = stat ? esc(stat.txt) : '';
+        var noTxt = esc(spec.no) + (spdText ? ' <tspan class="spd' + (stat && stat.dwell ? ' dwell' : '') + '">' + spdText + '</tspan>' : '');
         var fsNow = trainFs;
         var lyNow = ey - tri * 1.8 - fsNow * 1.15;
         nowHtml = '<g class="mp-now">' +
@@ -1574,10 +1578,10 @@
         var isUp = /[02468]$/.test(t.no);
         var col = isUp ? '#2563eb' : '#16a34a';
         var txtCol = isUp ? '#1d4ed8' : '#15803d';
-        var spd = liveSpeed(t.no, t.tab, t.line);
-        var dwellMap = t.fromName === t.toName;
-        var spdRaw = dwellMap ? (t.fromName + '停站') : (spd == null ? '' : spd + ' km/h');
-        var spdText = dwellMap ? (esc(t.fromName) + '停站') : spdRaw;
+        var stat = liveStatus(t.no, t.tab);
+        var dwellMap = stat ? stat.dwell : (t.fromName === t.toName);
+        var spdRaw = stat ? stat.txt : (dwellMap ? t.fromName + '停站' : '');
+        var spdText = esc(spdRaw);
         var label = t.no + (spdRaw ? ' ' + spdRaw : '');
         var textW = 0;
         for (var ci = 0; ci < label.length; ci++) {
@@ -1724,11 +1728,11 @@
       }
       lastAngle = ang;
       nowMarker.style.transform = 'translate(' + p[0].toFixed(1) + 'px,' + p[1].toFixed(1) + 'px) rotate(' + ang.toFixed(1) + 'deg)';
-      var spd = liveSpeed(spec.no, spec.tab, pickLine(spec.st && spec.st[0] ? spec.st[0][1] : ''));
-      var spdText = est.dwell ? (esc(est.toName) + '停站') : (spd == null ? '' : spd + ' km/h');
+      var stat = liveStatus(spec.no, spec.tab);
+      var spdText = stat ? esc(stat.txt) : '';
       nowLabel.setAttribute('x', p[0].toFixed(1));
       nowLabel.setAttribute('y', (p[1] - mapTrainK * 1.8 - mapTrainFs * 1.15).toFixed(1));
-      nowLabel.innerHTML = esc(spec.no) + (spdText ? ' <tspan class="spd' + (est.dwell ? ' dwell' : '') + '">' + spdText + '</tspan>' : '');
+      nowLabel.innerHTML = esc(spec.no) + (spdText ? ' <tspan class="spd' + (stat && stat.dwell ? ' dwell' : '') + '">' + spdText + '</tspan>' : '');
     }
 
     box.__mapState = function () {
@@ -2410,15 +2414,47 @@
   var spdTick = null;
   function isDwellText(txt) { return !!txt && txt.indexOf('停站') >= 0; }
 
-  function spdText(no, tab) {
+  /* 当前时刻之后的第一个办客到点，作为预计到达 */
+  function nextStop(no, tab) {
+    var tm = TM[no] && TM[no][tab] || [], st = TR[no] && TR[no][tab] || [];
+    if (!tm.length) return null;
+    var d = new Date(), now = d.getHours() * 60 + d.getMinutes() + d.getSeconds() / 60;
+    var first = null, last = null, i;
+    for (i = 0; i < tm.length; i++) {
+      if (tm[i][2] != null && (first == null || tm[i][2] < first)) first = tm[i][2];
+      if (tm[i][1] != null && (last == null || tm[i][1] > last)) last = tm[i][1];
+    }
+    if (first == null || last == null) return null;
+    if (now < first && last > 1440 && now + 1440 <= last) now += 1440;
+    for (i = 0; i < tm.length; i++) {
+      if (tm[i][1] != null && tm[i][1] >= now) {
+        var s = st[tm[i][0]];
+        return { name: s ? stName(s[0]) : '', arr: tm[i][1] };
+      }
+    }
+    return null;
+  }
+
+  /* 统一当前状态：停站「XX站停站至HH:MM」，运行「速度km/h→预计HH:MM下一站」 */
+  function liveStatus(no, tab) {
+    tab = tab || 0;
     var seg = liveSegment(no, tab);
     if (!seg) return null;
+    var st = TR[no] && TR[no][tab] || [];
     if (seg.from === seg.to) {
-      var st = TR[no] && TR[no][tab] || [];
-      return stName(st[seg.from] ? st[seg.from][0] : seg.from) + '停站';
+      var nm = stName(st[seg.from] ? st[seg.from][0] : seg.from);
+      var e = timeAt(no, tab, seg.from);
+      return { txt: nm + '停站至' + (e && e[2] != null ? fmtPlain(e[2]) : '—'), dwell: true };
     }
     var v = liveSpeed(no, tab);
-    return v == null ? '' : v + ' km/h';
+    var ns = nextStop(no, tab);
+    return { txt: (v == null ? '—' : v + 'km/h') + '→预计' +
+      (ns ? fmtPlain(ns.arr) + ns.name : '—'), dwell: false };
+  }
+
+  function spdText(no, tab) {
+    var s = liveStatus(no, tab);
+    return s ? s.txt : null;
   }
   function startSpdTick() {
     if (spdTick || typeof setInterval !== 'function') return;
@@ -2601,14 +2637,13 @@
     var box = out.querySelector('.tstatus');
     if (!box) return;
     var txt = spdText(no, tab);
-    var sp = box.querySelector('.ts-spd'), rt = box.querySelector('.ts-route');
+    var sp = box.querySelector('.ts-spd');
     if (txt == null) { box.style.display = 'none'; return; }
     box.style.display = '';
     if (sp) {
       sp.textContent = txt;
       if (sp.classList) sp.classList.toggle('dwell', isDwellText(txt));
     }
-    if (rt) rt.innerHTML = liveRoute(no, tab) || '';
   }
 
   function paintLiveRows(no, tab) {
@@ -2668,8 +2703,7 @@
 
     var headStatus = '<div class="tstatus">' +
       '<span class="ts-time">时刻 <b>' + tripTimes(no, tab) + '</b></span>' +
-      ' · 当前状态：<span class="ts-spd"></span>' +
-      ' · <span class="ts-route"></span></div>';
+      ' · 当前状态：<span class="ts-spd"></span></div>';
 
     var strip = '';
     if (bIdx >= 0) {
