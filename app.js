@@ -2239,9 +2239,51 @@
     return parts.join(' <i>→</i> ');
   }
 
+  /* 列表里的瞬时速度：放在当前线路信息前，停站显示红色“停站”，每秒刷新文字 */
+  var spdTick = null;
+  function spdText(no, tab) {
+    var seg = liveSegment(no, tab);
+    if (!seg) return null;
+    if (seg.from === seg.to) return '停站';
+    var v = liveSpeed(no, tab);
+    return v == null ? '' : v + ' km/h';
+  }
+  function startSpdTick() {
+    if (spdTick || typeof setInterval !== 'function') return;
+    spdTick = setInterval(function () {
+      var els = document.querySelectorAll('[data-spd-no]');
+      if (!els.length) return;
+      for (var i = 0; i < els.length; i++) {
+        var el = els[i];
+        var no = el.getAttribute('data-spd-no'), tab = +(el.getAttribute('data-spd-tab') || 0);
+        var txt = spdText(no, tab);
+        var lv = el.parentNode && el.parentNode.parentNode;
+        if (txt == null) {
+          if (lv) lv.style.display = 'none';   // 没运行就不显示当前状态/路线/速度
+          continue;
+        }
+        if (lv) {
+          lv.style.display = '';
+          var lin = lv.querySelector('.lvin'), route = liveRoute(no, tab);
+          if (lin && route && lin.innerHTML !== route) lin.innerHTML = route;
+        }
+        if (el.textContent !== txt) el.textContent = txt;
+        if (el.classList) el.classList.toggle('dwell', txt === '停站');
+      }
+    }, 1000);
+  }
+
   function liveSpan(no, tab) {
     var r = liveRoute(no, tab);
-    return r ? '<span class="lv"><span class="lvin">' + r + '</span></span>' : '';
+    if (!r) return '<span class="lv"></span>';   // 没运行：留占位让时刻靠右，但不写任何状态/路线/速度
+    tab = tab || 0;
+    var txt = spdText(no, tab);
+    startSpdTick();
+    return '<span class="lv">' +
+      '<span class="lvtop"><span class="lvhd">当前状态：</span>' +
+      '<span class="lvspd' + (txt === '停站' ? ' dwell' : '') + '" data-spd-no="' + esc(no) +
+      '" data-spd-tab="' + tab + '">' + (txt || '') + '</span></span>' +
+      '<span class="lvin">' + r + '</span></span>';
   }
 
   function resTrain(no, attrs) {
@@ -2632,7 +2674,29 @@
 
   function trainType(no) {
     var c = String(no).charAt(0).toUpperCase();
-    return 'GD CZ T K S'.indexOf(c) >= 0 ? c : '其他';
+    return /^[A-Z0-9]$/.test(c) ? c : '其他';
+  }
+
+  function typeOrder(t) {
+    var fixed = { G: 1, D: 2, C: 3, Z: 4, T: 5, K: 6, S: 7 };
+    if (fixed[t]) return fixed[t];
+    if (t === '其他') return 99;
+    return /^[A-Z]$/.test(t) ? 50 : 60;
+  }
+
+  /* 只列出当前列表里实际出现的车型，不再把所有非主流前缀并到“其他” */
+  function listTypes(list, getNo) {
+    getNo = getNo || function (x) { return x; };
+    var seen = {}, arr = [];
+    (list || []).forEach(function (x) {
+      var t = trainType(getNo(x));
+      if (!seen[t]) { seen[t] = 1; arr.push(t); }
+    });
+    arr.sort(function (a, b) {
+      var oa = typeOrder(a), ob = typeOrder(b);
+      return oa !== ob ? oa - ob : (a < b ? -1 : a > b ? 1 : 0);
+    });
+    return arr;
   }
 
   function filterList(list, getNo) {
@@ -2648,8 +2712,8 @@
     });
   }
 
-  function filterBar() {
-    var types = ['G', 'D', 'C', 'Z', 'T', 'K', 'S', '其他'];
+  function filterBar(list, getNo) {
+    var types = listTypes(list, getNo);
     var h = '<div class="fbar">' +
       '<label class="fopt' + (LIST_FILTER.running ? ' on' : '') + '"><input type="checkbox" data-f="run"' +
       (LIST_FILTER.running ? ' checked' : '') + '><span>运行中</span></label>' +
@@ -2716,7 +2780,7 @@
       out.__listRender = null;
     } else {
       body += '<div class="listbar"><div class="grp">途经车次<span class="cnt" id="lcnt">' +
-        num(list.length) + '</span></div>' + filterBar() + '</div>' +
+        num(list.length) + '</span></div>' + filterBar(list) + '</div>' +
         '<div id="trainlist">' + stationListHtml(list, sid) + '</div>';
       out.__listRender = function () {
         var filtered = filterList(list);
@@ -2826,7 +2890,7 @@
       out.__listRender = null;
     } else {
       body += '<div class="listbar"><div class="grp">经停车次<span class="cnt" id="lcnt">' +
-        num(list.length) + '</span></div>' + filterBar() + '</div>' +
+        num(list.length) + '</span></div>' + filterBar(list, function (x) { return x.no; }) + '</div>' +
         '<div id="trainlist">' + lineListHtml(list) + '</div>';
       out.__listRender = function () {
         var filtered = filterList(list, function (x) { return x.no; });
