@@ -1311,8 +1311,9 @@
 
     function render() {
       var cw = wrap.clientWidth || 380;
+      var bigMap = !!(document.body && document.body.classList && document.body.classList.contains('bigmap'));
       var k = vw0 / cw;
-      if (document.body && document.body.classList && document.body.classList.contains('bigmap')) k *= 1.35;
+      if (bigMap) k *= 1.7;
       var scale = Math.min(vw0 / view.w, vh0 / view.h);
       var ox = (vw0 - view.w * scale) / 2 - view.x * scale;
       var oy = (vh0 - view.h * scale) / 2 - view.y * scale;
@@ -1326,8 +1327,9 @@
       }
 
       var mob = isMobile();
-      var fs = (mob ? 13 : 11) * k, dotR = (mob ? 3.8 : 3.2) * k, halo = (mob ? 3.5 : 3) * k, lineW = 3;
-      var trainK = (mob ? 5.6 : 4.5) * k, trainFs = (mob ? 11 : 8.5) * k;
+      var fs = (mob ? 13 : 11) * k, dotR = (mob ? 3.8 : 3.2) * k, halo = (mob ? 3.5 : 3) * k, lineW = bigMap ? 5 : 3;
+      var trainBoost = spec.kind === 'train' ? 1.6 : 1;
+      var trainK = (mob ? 5.6 : 4.5) * k * trainBoost, trainFs = (mob ? 11 : 8.5) * k * trainBoost;
       var html = '';
       var est = spec.kind === 'train' ? estimatedNow(spec) : null;
 
@@ -1578,7 +1580,7 @@
         var isUp = /[02468]$/.test(t.no);
         var col = isUp ? '#2563eb' : '#16a34a';
         var txtCol = isUp ? '#1d4ed8' : '#15803d';
-        var stat = liveStatus(t.no, t.tab);
+        var stat = liveStatus(t.no, t.tab, spec.kind === 'train');
         var dwellMap = stat ? stat.dwell : (t.fromName === t.toName);
         var spdRaw = stat ? stat.txt : (dwellMap ? t.fromName + '停站' : '');
         var spdText = esc(spdRaw);
@@ -2260,6 +2262,17 @@
     var chosen = chooseSegLine(aName, bName, pa, pb, st[a[0]][1], st[b[0]][1]);
     var line = chosen ? chosen.line : pickLine(st[a[0]][1]);
     var pts = chosen && chosen.pts ? chosen.pts : [pa, pb];
+    /* 两点直线时首尾限速会把整段压成 0，先插值出中间采样点 */
+    if (pts.length < 3) {
+      var dense = [pts[0]], nSample = 24;
+      for (var j = 1; j < nSample; j++) {
+        var fr = j / nSample;
+        dense.push([pts[0][0] + (pts[1][0] - pts[0][0]) * fr,
+          pts[0][1] + (pts[1][1] - pts[0][1]) * fr]);
+      }
+      dense.push(pts[1]);
+      pts = dense;
+    }
     var S = [0];
     for (var i = 1; i < pts.length; i++) S.push(S[i - 1] + Math.sqrt(d2(pts[i - 1], pts[i])) * 111320);
     var totalM = S[S.length - 1];
@@ -2436,20 +2449,23 @@
   }
 
   /* 统一当前状态：停站「XX站停站至HH:MM」，运行「速度km/h→预计HH:MM下一站」 */
-  function liveStatus(no, tab) {
+  function liveStatus(no, tab, withEta) {
     tab = tab || 0;
+    if (withEta == null) withEta = true;
     var seg = liveSegment(no, tab);
     if (!seg) return null;
     var st = TR[no] && TR[no][tab] || [];
     if (seg.from === seg.to) {
       var nm = stName(st[seg.from] ? st[seg.from][0] : seg.from);
+      if (seg.from === st.length - 1) return { txt: '已抵达终点' + nm, dwell: false, arrived: true };
       var e = timeAt(no, tab, seg.from);
       return { txt: nm + '停站至' + (e && e[2] != null ? fmtPlain(e[2]) : '—'), dwell: true };
     }
     var v = liveSpeed(no, tab);
+    if (!withEta) return { txt: v == null ? '' : v + 'km/h', dwell: false };
     var ns = nextStop(no, tab);
     return { txt: (v == null ? '—' : v + 'km/h') + '→预计' +
-      (ns ? fmtPlain(ns.arr) + ns.name : '—'), dwell: false };
+      (ns ? fmtPlain(ns.arr) + '抵达' + ns.name : '—'), dwell: false };
   }
 
   function spdText(no, tab) {
