@@ -1305,7 +1305,7 @@
     function render() {
       var cw = wrap.clientWidth || 380;
       var k = vw0 / cw;
-      if (document.body && document.body.classList && document.body.classList.contains('bigmap')) k *= 1.8;
+      if (document.body && document.body.classList && document.body.classList.contains('bigmap')) k *= 1.35;
       var scale = Math.min(vw0 / view.w, vh0 / view.h);
       var ox = (vw0 - view.w * scale) / 2 - view.x * scale;
       var oy = (vh0 - view.h * scale) / 2 - view.y * scale;
@@ -1576,22 +1576,34 @@
         var spdRaw = dwellMap ? (t.fromName + '停站') : (spd == null ? '' : spd + ' km/h');
         var spdText = dwellMap ? (esc(t.fromName) + '停站') : spdRaw;
         var label = t.no + (spdRaw ? ' ' + spdRaw : '');
-        var fs = mapTrainFs, w = label.length * fs * 0.62 + 4, h = fs * 1.15;
-        var cands = [
+        var textW = 0;
+        for (var ci = 0; ci < label.length; ci++) {
+          textW += /[\u2e80-\uffff]/.test(label.charAt(ci)) ? 1 : 0.55;
+        }
+        var fs = mapTrainFs, w = textW * fs + 6, h = fs * 1.15;
+        var big = document.body && document.body.classList && document.body.classList.contains('bigmap');
+        var cands = big
+          ? [[x - w / 2, y - tri * 1.8 - h * (1 + (i % 3) * 0.95), 'middle']]
+          : [
           [x - w / 2, y - tri * 1.8 - h, 'middle'],
           [x - w / 2, y + tri * 1.8, 'middle'],
           [x + tri * 1.2, y - h / 2, 'start'],
           [x - tri * 1.2 - w, y - h / 2, 'start']
         ];
         var pos = null;
-        for (j = 0; j < cands.length; j++) {
-          var r = [cands[j][0], cands[j][1], w, h], ok = true;
-          for (var q = 0; q < placed.length; q++) {
-            var r2 = placed[q];
-            if (r[0] < r2[0] + r2[2] && r2[0] < r[0] + r[2] &&
-                r[1] < r2[1] + r2[3] && r2[1] < r[1] + r[3]) { ok = false; break; }
+        if (big) {
+          var lx = Math.max(w / 2 + 4, Math.min(vw0 - w / 2 - 4, x));
+          pos = [lx - w / 2, cands[0][1], 'middle'];
+        } else {
+          for (j = 0; j < cands.length; j++) {
+            var r = [cands[j][0], cands[j][1], w, h], ok = true;
+            for (var q = 0; q < placed.length; q++) {
+              var r2 = placed[q];
+              if (r[0] < r2[0] + r2[2] && r2[0] < r[0] + r[2] &&
+                  r[1] < r2[1] + r2[3] && r2[1] < r[1] + r[3]) { ok = false; break; }
+            }
+            if (ok) { pos = cands[j]; placed.push(r); break; }
           }
-          if (ok) { pos = cands[j]; placed.push(r); break; }
         }
         if (!pos) {
           pos = [x - w / 2, y - tri * 1.8 - h * (placed.length + 1), 'middle'];
