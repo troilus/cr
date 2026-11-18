@@ -180,6 +180,17 @@
   .pp .pl a{color:var(--accent);text-decoration:none;margin-right:8px}
   .pp .pl a:hover{text-decoration:underline}
   .pp .pl b{color:#111827}
+  .tp .tp-rt{font-size:15px;font-weight:600;color:var(--text);line-height:1.6}
+  .tp .tp-rt i{font-style:normal;color:#9aa1ab;margin:0 4px}
+  .tp .tp-tm{margin-top:2px;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .tp .tp-tm b{color:#374151;font-weight:600}
+  .tp .tp-st{margin-top:6px;padding-top:6px;border-top:1px solid var(--line);font-size:12px;color:var(--muted)}
+  .tp .tp-spd{color:#374151;font-weight:600;font-variant-numeric:tabular-nums}
+  .tp .tp-spd.dwell{color:#dc2626}
+  .tp .tp-route{color:#374151}
+  .tp .tp-route i{font-style:normal;color:#9aa1ab;margin:0 2px}
+  .tp .tp-route .mid{color:#15803d;font-weight:600}
+  .tp .pl{margin-top:6px}
   .tagx{
     display:inline-block;margin:0 6px 4px 0;padding:1px 7px;border-radius:5px;
     background:#f3f4f6;color:#4b5563;font-size:12px;
@@ -346,6 +357,25 @@
     border:1px solid var(--line);background:#fff;color:var(--muted);
   }
   .map-reset:hover{color:var(--accent);border-color:#c7d7fe}
+  .map-big{
+    font:inherit;font-size:11px;padding:1px 8px;border-radius:6px;cursor:pointer;
+    border:1px solid var(--line);background:#fff;color:var(--muted);
+  }
+  .map-big:hover{color:var(--accent);border-color:#c7d7fe}
+  body.bigmap{overflow:hidden}
+  body.bigmap .mapcol{
+    position:fixed;inset:0;z-index:80;background:#fff;border-left:0;
+    padding:12px 18px 18px;display:flex;flex-direction:column;overflow:hidden;
+  }
+  body.bigmap .mapcol .map-hd,body.bigmap .mapcol .map-lg{flex:none}
+  body.bigmap .mapcol .mapwrap{flex:1;min-height:0;max-height:none;display:flex}
+  body.bigmap .mapcol .rmap{height:100%;width:100%}
+  body.bigmap .map-hd,body.bigmap .map-lg,body.bigmap .map-lg a{font-size:14px}
+  body.bigmap .map-hd b{font-size:16px}
+  body.bigmap .map-zoom-level{font-size:13px}
+  .map-trains-lg .mp-center-toggle+i{
+    width:0;height:0;border-radius:0;border:1.5px solid #16a34a;transform:scale(.85);
+  }
   .map-zoom{
     font:inherit;font-size:13px;line-height:1;width:22px;height:20px;padding:0;
     border-radius:6px;cursor:pointer;border:1px solid var(--line);background:#fff;color:var(--muted);

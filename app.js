@@ -43,6 +43,22 @@
   var BU_SET = null, BU_LIST = null;  // 担当 -> 车次[]，首次用到才建
   var LIST_FILTER = { running: false, maprun: false, types: {} };
   var LIST_KEY = '';
+  var popTimer = null;   // 车次弹卡的每秒刷新
+
+  /* 全屏大图：整页覆盖 .mapcol，再点按钮或 ESC 返回 */
+  function closeBigMap() {
+    if (typeof document === 'undefined' || !document.body || !document.body.classList ||
+        !document.body.classList.contains('bigmap')) return;
+    document.body.classList.remove('bigmap');
+    var b = document.querySelector('.map-big');
+    if (b) b.textContent = '大图';
+    if (mapRender) mapRender();
+  }
+  if (typeof document !== 'undefined') {
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') closeBigMap();
+    });
+  }
 
   /* ---------------- 工具 ---------------- */
   function norm(s) { return String(s == null ? '' : s).toUpperCase().replace(/[\s\u3000]+/g, ''); }
@@ -476,6 +492,7 @@
   }
 
   function closePop() {
+    if (popTimer) { clearInterval(popTimer); popTimer = null; }
     if (pop) pop.hidden = true;
     popAnchor = null;
   }
@@ -504,6 +521,20 @@
       pop.querySelector('.pop-hd b').textContent = popTitle(key);
       pop.querySelector('.pop-bd').innerHTML = body;
       if (!isMobile()) placePop(popAnchor);
+      if (popTimer) { clearInterval(popTimer); popTimer = null; }
+      if (key.indexOf('tr:') === 0 && typeof setInterval === 'function') {
+        var no = key.slice(3), tab = runningTab(no);
+        popTimer = setInterval(function () {
+          if (!pop || pop.hidden) { clearInterval(popTimer); popTimer = null; return; }
+          var sp = pop.querySelector('.tp-spd'), rt = pop.querySelector('.tp-route');
+          var txt = spdText(no, tab);
+          if (sp && txt != null) {
+            sp.textContent = txt;
+            if (sp.classList) sp.classList.toggle('dwell', isDwellText(txt));
+          }
+          if (rt) rt.innerHTML = liveRoute(no, tab) || '';
+        }, 1000);
+      }
     }
 
     if (!META) {
@@ -537,7 +568,16 @@
 
   function trPop(no) {
     if (!TR[no]) return '<div class="pp">没有这个车次。</div>';
-    return '<div class="pp"><ul class="res">' + resTrain(no) + '</ul>' +
+    var tab = runningTab(no), v = TR[no][tab] || TR[no][0];
+    var a = stName(v[0][0]), b = stName(v[v.length - 1][0]);
+    var txt = spdText(no, tab), route = liveRoute(no, tab);
+    var stHtml = txt == null ? '—' :
+      '<span class="tp-spd' + (isDwellText(txt) ? ' dwell' : '') + '">' + esc(txt) + '</span>' +
+      (route ? ' · <span class="tp-route">' + route + '</span>' : '');
+    return '<div class="pp tp">' +
+      '<div class="tp-rt">' + esc(a) + '<i>→</i>' + esc(b) + '</div>' +
+      '<div class="tp-tm">时刻 <b>' + tripTimes(no, tab) + '</b></div>' +
+      '<div class="tp-st">当前状态：' + stHtml + '</div>' +
       '<div class="pl"><a href="#" data-k="' + esc(no) + '">打开车次页 →</a></div></div>';
   }
 
@@ -1213,6 +1253,16 @@
       view.h *= zoom;
       view.x = fx - view.w / 2;
       view.y = fy - view.h / 2;
+    } else if (spec.kind === 'train') {
+      /* 车次页默认放大并居中到当前车位置 */
+      var et = estimatedNow(spec);
+      if (et) {
+        var tx = et.lon * kx, ty = -et.lat, z = 0.4;
+        view.w *= z;
+        view.h *= z;
+        view.x = tx - view.w / 2;
+        view.y = ty - view.h / 2;
+      }
     }
     initialView = { x: view.x, y: view.y, w: view.w, h: view.h };
     if (spec.keep && spec.keep.view) {
@@ -1232,7 +1282,8 @@
       '<button type="button" class="map-zoom" data-z="-1" aria-label="缩小">−</button>' +
       '<span class="map-zoom-level">1.0×</span>' +
       '<button type="button" class="map-zoom" data-z="1" aria-label="放大">+</button>' +
-      '<button type="button" class="map-reset">复位</button></div>' +
+      '<button type="button" class="map-reset">复位</button>' +
+      '<button type="button" class="map-big">大图</button></div>' +
       '<div class="mapwrap"><svg class="rmap" viewBox="0 0 ' + vw0.toFixed(0) + ' ' + vh0.toFixed(0) +
       '" preserveAspectRatio="xMidYMid meet" role="img" aria-label="线路示意图"></svg></div>' +
       '<div class="map-lg"></div>';
@@ -1241,10 +1292,20 @@
     var wrap = box.querySelector('.mapwrap');
     var mapProject = null, nowMarker = null, nowLabel = null, trainLayer = null, mapTrainK = 4.5, mapTrainFs = 8.5, lastAngle = null;
     var showTrains = spec.keep ? spec.keep.showTrains : true;
+    var centerOnTrain = spec.kind === 'train';   // 车次页默认持续居中
+
+    function centerNow() {
+      var est = estimatedNow(spec);
+      if (!est) return;
+      view.x = est.lon * kx - view.w / 2;
+      view.y = -est.lat - view.h / 2;
+      render();
+    }
 
     function render() {
       var cw = wrap.clientWidth || 380;
       var k = vw0 / cw;
+      if (document.body && document.body.classList && document.body.classList.contains('bigmap')) k *= 1.8;
       var scale = Math.min(vw0 / view.w, vh0 / view.h);
       var ox = (vw0 - view.w * scale) / 2 - view.x * scale;
       var oy = (vh0 - view.h * scale) / 2 - view.y * scale;
@@ -1270,10 +1331,16 @@
           (spec.cols[n] || lineColor(n)) + '"></i>' + esc(n) + '</a>';
       });
       if (spec.getTrains || spec.trains) {
-        legend += '<label class="map-trains-lg"><input type="checkbox" class="mp-trains-toggle"' +
-          (showTrains ? ' checked' : '') + '><i></i>运行中 <span class="mp-train-count">' +
-          ((spec.trains || []).length) + '</span></label>' +
-          '<button type="button" class="map-locate" data-locate title="显示我的位置">◎</button>';
+        if (spec.kind === 'train') {
+          legend += '<label class="map-trains-lg"><input type="checkbox" class="mp-center-toggle"' +
+            (centerOnTrain ? ' checked' : '') + '><i></i>居中</label>' +
+            '<button type="button" class="map-locate" data-locate title="显示我的位置">◎</button>';
+        } else {
+          legend += '<label class="map-trains-lg"><input type="checkbox" class="mp-trains-toggle"' +
+            (showTrains ? ' checked' : '') + '><i></i>运行中 <span class="mp-train-count">' +
+            ((spec.trains || []).length) + '</span></label>' +
+            '<button type="button" class="map-locate" data-locate title="显示我的位置">◎</button>';
+        }
       }
       box.querySelector('.map-lg').innerHTML = legend;
       var tg = box.querySelector('.mp-trains-toggle');
@@ -1287,6 +1354,13 @@
           } else {
             stopTrains();
           }
+        });
+      }
+      var ctg = box.querySelector('.mp-center-toggle');
+      if (ctg) {
+        ctg.addEventListener('change', function () {
+          centerOnTrain = ctg.checked;
+          if (centerOnTrain) centerNow();
         });
       }
       var locBtn = box.querySelector('[data-locate]');
@@ -1625,6 +1699,7 @@
         nowLabel = null;
         return;
       }
+      if (centerOnTrain) { centerNow(); return; }
       if (!nowMarker || !nowLabel || !mapProject) { render(); return; }
       var p = mapProject(est.lat, est.lon);
       var ang = est.angle || 0;
@@ -1661,10 +1736,22 @@
 
     var reset = box.querySelector('.map-reset');
     reset.addEventListener('click', function () {
+      centerOnTrain = false;
+      var ct = box.querySelector('.mp-center-toggle');
+      if (ct) ct.checked = false;
       view = { x: initialView.x, y: initialView.y, w: initialView.w, h: initialView.h };
       locatePos = null;
       render();
     });
+
+    var bigBtn = box.querySelector('.map-big');
+    if (bigBtn) {
+      bigBtn.addEventListener('click', function () {
+        var on = document.body.classList && document.body.classList.toggle('bigmap');
+        bigBtn.textContent = on ? '关闭' : '大图';
+        render();
+      });
+    }
 
     box.querySelectorAll('.map-zoom').forEach(function (b) {
       b.addEventListener('click', function () {
@@ -1681,6 +1768,12 @@
       });
     });
 
+    function svgMetrics() {
+      var r = svg.getBoundingClientRect();
+      var ppu = Math.min(r.width / vw0, r.height / vh0) || 1;
+      return { r: r, ppu: ppu, iw: vw0 * ppu, ih: vh0 * ppu,
+        ox: (r.width - vw0 * ppu) / 2, oy: (r.height - vh0 * ppu) / 2 };
+    }
     var drag = null, moved = false;
     svg.addEventListener('pointerdown', function (e) {
       var hit = e.target.closest &&
@@ -1694,8 +1787,8 @@
       if (!drag) return;
       var dx = e.clientX - drag.x, dy = e.clientY - drag.y;
       if (Math.abs(dx) + Math.abs(dy) > 3) moved = true;
-      var cw = wrap.clientWidth || 380;
-      var sc = Math.min(vw0 / view.w, vh0 / view.h);
+      var m = svgMetrics();
+      var sc = m.ppu * Math.min(vw0 / view.w, vh0 / view.h);
       view.x = drag.vx - dx / sc;
       view.y = drag.vy - dy / sc;
       clampView();
@@ -1710,8 +1803,8 @@
 
     svg.addEventListener('wheel', function (e) {
       e.preventDefault();
-      var r = svg.getBoundingClientRect();
-      var sx = (e.clientX - r.left) / r.width, sy = (e.clientY - r.top) / r.height;
+      var m = svgMetrics();
+      var sx = (e.clientX - m.r.left - m.ox) / m.iw, sy = (e.clientY - m.r.top - m.oy) / m.ih;
       var scale = Math.min(vw0 / view.w, vh0 / view.h);
       var wx = view.x + (sx * vw0 - (vw0 - view.w * scale) / 2) / scale;
       var wy = view.y + (sy * vh0 - (vh0 - view.h * scale) / 2) / scale;
@@ -2258,6 +2351,7 @@
 
   /* ---------------- 视图 ---------------- */
   function paint() {
+    closeBigMap();
     if (nowTimer) { clearInterval(nowTimer); nowTimer = null; }
     if (liveTimer) { clearInterval(liveTimer); liveTimer = null; }
     if (trainsTimer) { clearInterval(trainsTimer); trainsTimer = null; }
@@ -2401,6 +2495,12 @@
       if (liveSegment(no, i)) return true;
     }
     return false;
+  }
+
+  function runningTab(no) {
+    var vs = TR[no] || [];
+    for (var i = 0; i < vs.length; i++) if (liveSegment(no, i)) return i;
+    return 0;
   }
 
   function runDot(no, tab) {
