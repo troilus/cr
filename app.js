@@ -93,10 +93,10 @@
     return pad2(Math.floor(m / 60)) + ':' + pad2(m % 60) +
       (d > 0 ? '<i class="d">+' + d + '</i>' : '');
   }
-  function fmtPlain(v) {
+  function fmtPlain(v, noDay) {
     if (v == null) return '';
     var d = Math.floor(v / 1440), m = v - 1440 * d;
-    return pad2(Math.floor(m / 60)) + ':' + pad2(m % 60) + (d > 0 ? '+' + d : '');
+    return pad2(Math.floor(m / 60)) + ':' + pad2(m % 60) + (d > 0 && !noDay ? '+' + d : '');
   }
   function durTxt(m) {
     var d = Math.floor(m / 1440), r = m - 1440 * d;
@@ -2345,13 +2345,26 @@
     };
   }
 
+  function trainNow(no, tab) {
+    var tm = TM[no] && TM[no][tab] || [];
+    var d = new Date(), now = d.getHours() * 60 + d.getMinutes() + d.getSeconds() / 60;
+    var first = null, last = null;
+    for (var i = 0; i < tm.length; i++) {
+      if (tm[i][2] != null && (first == null || tm[i][2] < first)) first = tm[i][2];
+      if (tm[i][1] != null && (last == null || tm[i][1] > last)) last = tm[i][1];
+    }
+    if (first == null || last == null) return now;
+    if (now < first && last > 1440 && now + 1440 <= last) now += 1440;
+    return now;
+  }
+
   function currentTimedSeg(no, tab, now) {
     var tm = TM[no] && TM[no][tab] || [];
     for (var i = 0; i < tm.length - 1; i++) {
       var a = tm[i], b = tm[i + 1];
       if (a[2] == null || b[1] == null) continue;
       if (now >= a[2] && now <= b[1]) return { i: i, e: now - a[2] };
-      if (now > b[1] && b[2] != null && now < b[2]) return { dwell: true };
+      if (now > b[1] && b[2] != null && now < b[2]) return { dwell: true, k: b[0] };
     }
     return null;
   }
@@ -2452,14 +2465,23 @@
   function liveStatus(no, tab, withEta) {
     tab = tab || 0;
     if (withEta == null) withEta = true;
-    var seg = liveSegment(no, tab);
-    if (!seg) return null;
     var st = TR[no] && TR[no][tab] || [];
-    if (seg.from === seg.to) {
-      var nm = stName(st[seg.from] ? st[seg.from][0] : seg.from);
-      if (seg.from === st.length - 1) return { txt: '已抵达终点' + nm, dwell: false, arrived: true };
-      var e = timeAt(no, tab, seg.from);
-      return { txt: nm + '停站至' + (e && e[2] != null ? fmtPlain(e[2]) : '—'), dwell: true };
+    var cur = currentTimedSeg(no, tab, trainNow(no, tab));
+    if (!cur) {
+      var tm = TM[no] && TM[no][tab] || [], lastArr = null;
+      for (var li = 0; li < tm.length; li++) {
+        if (tm[li][1] != null && (lastArr == null || tm[li][1] > lastArr)) lastArr = tm[li][1];
+      }
+      if (lastArr != null && trainNow(no, tab) > lastArr && st.length) {
+        return { txt: '已抵达终点' + stName(st[st.length - 1][0]), dwell: false, arrived: true };
+      }
+      return null;
+    }
+    if (cur.dwell) {
+      var nm = stName(st[cur.k] ? st[cur.k][0] : cur.k);
+      if (cur.k === st.length - 1) return { txt: '已抵达终点' + nm, dwell: false, arrived: true };
+      var e = timeAt(no, tab, cur.k);
+      return { txt: nm + '停站至' + (e && e[2] != null ? fmtPlain(e[2], true) : '—'), dwell: true };
     }
     var v = liveSpeed(no, tab);
     if (!withEta) return { txt: v == null ? '' : v + 'km/h', dwell: false };
@@ -2482,8 +2504,8 @@
         var no = el.getAttribute('data-spd-no'), tab = +(el.getAttribute('data-spd-tab') || 0);
         var txt = spdText(no, tab);
         var lv = el.parentNode && el.parentNode.parentNode;
-        if (txt == null) {
-          if (lv) lv.style.display = 'none';   // 没运行就不显示当前状态/路线/速度
+        if (txt == null || txt.indexOf('已抵达终点') === 0) {
+          if (lv) lv.style.display = 'none';   // 没运行/已到终点就不显示当前状态/路线/速度
           continue;
         }
         if (lv) {
