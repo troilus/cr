@@ -41,7 +41,8 @@
   var S = { kind: 'empty' };
   var ST_INDEX = null;  // 站号 -> 车次[]，首次用到才建
   var BU_SET = null, BU_LIST = null;  // 担当 -> 车次[]，首次用到才建
-  var LIST_FILTER = { running: false, maprun: false, types: {} };
+  var LIST_FILTER = { running: false, maprun: false, origin: false, dest: false, types: {} };
+  var LIST_LIMIT = 200;   // 当前列表已渲染条数，可逐次加载更多
   var LIST_KEY = '';
   var popTimer = null;   // 车次弹卡的每秒刷新
 
@@ -3008,7 +3009,7 @@
   function ensureListFilter(key) {
     if (LIST_KEY !== key) {
       LIST_KEY = key;
-      LIST_FILTER = { running: false, maprun: false, types: {} };
+      LIST_FILTER = { running: false, maprun: false, origin: false, dest: false, types: {} };
     }
   }
 
@@ -3039,26 +3040,60 @@
     return arr;
   }
 
+  /* 车次任一经由的首站 / 末站是否为当前站 */
+  function trainEndsAt(no, sid, last) {
+    var vs = TR[no] || [];
+    for (var v = 0; v < vs.length; v++) {
+      var st = vs[v];
+      if (!st || !st.length) continue;
+      var row = st[last ? st.length - 1 : 0];
+      if (row && row[0] === sid) return true;
+    }
+    return false;
+  }
+
   function filterList(list, getNo) {
     getNo = getNo || function (x) { return x; };
     var types = LIST_FILTER.types, anyType = false;
     for (var t in types) { if (types[t]) { anyType = true; break; } }
+    var stFilter = S.kind === 'station' && (LIST_FILTER.origin || LIST_FILTER.dest);
     return list.filter(function (x) {
       var no = getNo(x);
       if (LIST_FILTER.running && !isRunning(no)) return false;
       if (LIST_FILTER.maprun && !(out.__mapNo && out.__mapNo[no])) return false;
       if (anyType && !types[trainType(no)]) return false;
+      if (stFilter) {
+        var okO = LIST_FILTER.origin && trainEndsAt(no, S.st, false);
+        var okD = LIST_FILTER.dest && trainEndsAt(no, S.st, true);
+        if (!okO && !okD) return false;   // 勾选两项时为「本站始发或本站终到」
+      }
       return true;
     });
   }
 
-  function filterBar(list, getNo) {
+  function moreHtml(total) {
+    if (total <= LIST_LIMIT) {
+      return LIST_LIMIT > MAX_LIST ? '<div class="more">已显示全部 ' + num(total) + ' 条</div>' : '';
+    }
+    return '<div class="more">' +
+      '<button type="button" class="morebtn" data-more="more">加载更多（已显示 ' +
+      num(Math.min(LIST_LIMIT, total)) + ' / 共 ' + num(total) + ' 条）</button>' +
+      '<button type="button" class="morebtn" data-more="all">显示全部</button></div>';
+  }
+
+  function filterBar(list, getNo, opts) {
     var types = listTypes(list, getNo);
     var h = '<div class="fbar">' +
       '<label class="fopt' + (LIST_FILTER.running ? ' on' : '') + '"><input type="checkbox" data-f="run"' +
       (LIST_FILTER.running ? ' checked' : '') + '><span>运行中</span></label>' +
       '<label class="fopt' + (LIST_FILTER.maprun ? ' on' : '') + '"><input type="checkbox" data-f="maprun"' +
       (LIST_FILTER.maprun ? ' checked' : '') + '><span>运行中（当前线路图）</span></label>';
+    if (opts && opts.station) {
+      h += '<label class="fopt' + (LIST_FILTER.origin ? ' on' : '') + '"><input type="checkbox" data-f="origin"' +
+        (LIST_FILTER.origin ? ' checked' : '') + '><span>始发</span></label>' +
+        '<label class="fopt' + (LIST_FILTER.dest ? ' on' : '') + '"><input type="checkbox" data-f="dest"' +
+        (LIST_FILTER.dest ? ' checked' : '') + '><span>终到</span></label>';
+    }
     types.forEach(function (t) {
       h += '<label class="fopt' + (LIST_FILTER.types[t] ? ' on' : '') + '"><input type="checkbox" data-f="' + t + '"' +
         (LIST_FILTER.types[t] ? ' checked' : '') + '><span>' + t + '</span></label>';
@@ -3069,7 +3104,7 @@
   function stationListHtml(list, sid) {
     var filtered = filterList(list);
     if (!filtered.length) return '<div class="err">没有符合筛选条件的车次。</div>';
-    var h = '<ul class="res">' + filtered.slice(0, MAX_LIST).map(function (no) {
+    var h = '<ul class="res">' + filtered.slice(0, LIST_LIMIT).map(function (no) {
       var info = atStation(no, sid);
       var e = timeAt(no, info.vi, info.k);
       return '<li><a href="#" data-k="' + esc(no) + '" data-hl="' + sid + '"><b>' + runDot(no) + esc(no) + '</b>' +
@@ -3078,25 +3113,21 @@
         (e ? '<span class="tm">' + fmtT(e[1]) + ' / ' + fmtT(e[2]) + '</span>' : '') +
         '<span class="rm">第 ' + (info.k + 1) + ' 站 · ' + num(info.km) + ' km</span></a></li>';
     }).join('') + '</ul>';
-    if (filtered.length > MAX_LIST) {
-      h += '<div class="more">仅显示前 ' + MAX_LIST + ' 条，共 ' + num(filtered.length) + ' 条</div>';
-    }
+    h += moreHtml(filtered.length);
     return h;
   }
 
   function lineListHtml(list) {
     var filtered = filterList(list, function (x) { return x.no; });
     if (!filtered.length) return '<div class="err">没有符合筛选条件的车次。</div>';
-    var h = '<ul class="res">' + filtered.slice(0, MAX_LIST).map(function (x) {
+    var h = '<ul class="res">' + filtered.slice(0, LIST_LIMIT).map(function (x) {
       var v = TR[x.no][0];
       return '<li><a href="#" data-k="' + esc(x.no) + '"><b>' + runDot(x.no) + esc(x.no) + '</b>' +
         rtSpan(stName(v[0][0]), stName(v[v.length - 1][0]), x.no, 0) +
         liveSpan(x.no, 0) +
         '<span class="rm">经 ' + x.n + ' 站</span></a></li>';
     }).join('') + '</ul>';
-    if (filtered.length > MAX_LIST) {
-      h += '<div class="more">仅显示前 ' + MAX_LIST + ' 条，共 ' + num(filtered.length) + ' 条</div>';
-    }
+    h += moreHtml(filtered.length);
     return h;
   }
 
@@ -3120,7 +3151,7 @@
       out.__listRender = null;
     } else {
       body += '<div class="listbar"><div class="grp">途经车次<span class="cnt" id="lcnt">' +
-        num(list.length) + '</span></div>' + filterBar(list) + '</div>' +
+        num(list.length) + '</span></div>' + filterBar(list, null, { station: true }) + '</div>' +
         '<div id="trainlist">' + stationListHtml(list, sid) + '</div>';
       out.__listRender = function () {
         var filtered = filterList(list);
@@ -3173,16 +3204,14 @@
     if (!list.length) {
       html += '<div class="err">没有找到担当「' + esc(raw) + '」的车次。</div>';
     } else {
-      html += '<ul class="res">' + list.slice(0, MAX_LIST).map(function (no) {
+      html += '<ul class="res">' + list.slice(0, LIST_LIMIT).map(function (no) {
         var v = TR[no][0];
         return '<li><a href="#" data-k="' + esc(no) + '"><b>' + runDot(no) + esc(no) + '</b>' +
           rtSpan(stName(v[0][0]), stName(v[v.length - 1][0]), no, 0) +
           liveSpan(no, 0) +
           '<span class="rm">' + v.length + ' 站 · ' + num(v[v.length - 1][2]) + ' km</span></a></li>';
       }).join('') + '</ul>';
-      if (list.length > MAX_LIST) {
-        html += '<div class="more">仅显示前 ' + MAX_LIST + ' 条，共 ' + num(list.length) + ' 条</div>';
-      }
+      html += moreHtml(list.length);
     }
     out.innerHTML = html + '</section>';
     document.title = raw + ' 担当 · 列车经由查询';
@@ -3264,7 +3293,7 @@
       html += '<div class="err">没有车次同时途经 <b>' + esc(an) + '</b> 和 <b>' + esc(bn) +
         '</b>（且顺序为先 ' + esc(an) + ' 后 ' + esc(bn) + '）。</div>';
     } else {
-      html += '<ul class="res">' + list.slice(0, MAX_LIST).map(function (x) {
+      html += '<ul class="res">' + list.slice(0, LIST_LIMIT).map(function (x) {
         var ea = timeAt(x.no, x.vi, x.from), eb = timeAt(x.no, x.vi, x.to);
         var tt = '';
         if (ea || eb) {
@@ -3278,9 +3307,7 @@
           (tt ? '<span class="tm">' + tt + '</span>' : '') +
           '<span class="rm">区间 ' + num(x.km) + ' km · ' + x.n + ' 站</span></a></li>';
       }).join('') + '</ul>';
-      if (list.length > MAX_LIST) {
-        html += '<div class="more">仅显示前 ' + MAX_LIST + ' 条，共 ' + num(list.length) + ' 条</div>';
-      }
+      html += moreHtml(list.length);
     }
 
     out.innerHTML = html + '</section>';
@@ -3316,6 +3343,7 @@
 
   /* ---------------- 导航 ---------------- */
   function openTrain(no, hl) {
+    LIST_LIMIT = MAX_LIST;
     if (!TR[no]) {
       S = { kind: 'results', q: norm(no), raw: no };
       paint();
@@ -3331,6 +3359,7 @@
 
   function go(raw) {
     var p = parse(raw);
+    LIST_LIMIT = MAX_LIST;
     hideAc();
     S = p;
     if (p.kind === 'empty') {
@@ -3346,6 +3375,7 @@
 
   function syncFromHash() {
     var p = fromHash();
+    LIST_LIMIT = MAX_LIST;
     S = p;
     paint();
     q.value = p.kind === 'train' ? p.no : (p.raw || '');
@@ -3409,6 +3439,15 @@
     if (mb) { e.preventDefault(); toggleMap(); return; }
     var pe = e.target.closest('[data-pop]');
     if (pe) { e.preventDefault(); openPop(pe.getAttribute('data-pop'), pe); return; }
+    var more = e.target.closest('[data-more]');
+    if (more) {
+      e.preventDefault();
+      if (more.getAttribute('data-more') === 'all') LIST_LIMIT = Infinity;
+      else LIST_LIMIT += MAX_LIST;
+      if (out.__listRender) out.__listRender();
+      else paint();
+      return;
+    }
     var a = e.target.closest('a');
     if (!a) return;
     var k = a.getAttribute('data-k');
@@ -3430,6 +3469,8 @@
     if (!f) return;
     if (f === 'run') LIST_FILTER.running = e.target.checked;
     else if (f === 'maprun') LIST_FILTER.maprun = e.target.checked;
+    else if (f === 'origin') LIST_FILTER.origin = e.target.checked;
+    else if (f === 'dest') LIST_FILTER.dest = e.target.checked;
     else if (e.target.checked) LIST_FILTER.types[f] = 1;
     else delete LIST_FILTER.types[f];
     var lab = e.target.closest('.fopt');
