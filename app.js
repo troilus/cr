@@ -1310,10 +1310,14 @@
     }
 
     function render() {
-      var cw = wrap.clientWidth || 380;
       var bigMap = !!(document.body && document.body.classList && document.body.classList.contains('bigmap'));
-      var k = vw0 / cw;
-      if (bigMap) k *= 1.7;
+      /* 按 SVG 实际渲染缩放换算字号，避免大图 viewBox 被高度限制时字反而变小 */
+      var cw = wrap.clientWidth || svg.clientWidth || 380;
+      var sw = svg.clientWidth || cw, sh = svg.clientHeight || 0;
+      var sc = (sh > 0 && vh0 > 0) ? Math.min(sw / vw0, sh / vh0) : sw / vw0;
+      if (!(sc > 0) || !isFinite(sc)) sc = 1;
+      var k = 1 / sc;
+      if (bigMap) k *= 1.8;
       var scale = Math.min(vw0 / view.w, vh0 / view.h);
       var ox = (vw0 - view.w * scale) / 2 - view.x * scale;
       var oy = (vh0 - view.h * scale) / 2 - view.y * scale;
@@ -1327,7 +1331,7 @@
       }
 
       var mob = isMobile();
-      var fs = (mob ? 13 : 11) * k, dotR = (mob ? 3.8 : 3.2) * k, halo = (mob ? 3.5 : 3) * k, lineW = bigMap ? 5 : 3;
+      var fs = (mob ? 13 : 11) * k, dotR = (mob ? 3.8 : 3.2) * k, halo = (mob ? 3.5 : 3) * k, lineW = bigMap ? 7 : 3;
       var trainBoost = spec.kind === 'train' ? 1.6 : 1;
       var trainK = (mob ? 5.6 : 4.5) * k * trainBoost, trainFs = (mob ? 11 : 8.5) * k * trainBoost;
       var html = '';
