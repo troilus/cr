@@ -2592,6 +2592,72 @@
     return 0;
   }
 
+  /* 页眉实时概览：运行中普速/动车、最快车、最多车次线路、最多停站车站 */
+  function topCount(obj) {
+    var k = '', v = -1;
+    for (var x in obj) if (obj[x] > v) { v = obj[x]; k = x; }
+    return { k: k, v: v };
+  }
+
+  /* 当前区间时刻表均速 km/h；页眉概览用，避免为 1.4 万车次建速度曲线 */
+  function segAvgKmh(st, tm, i) {
+    var a = tm[i], b = tm[i + 1];
+    if (!a || !b) return null;
+    var ra = st[a[0]], rb = st[b[0]];
+    if (!ra || !rb || ra[2] == null || rb[2] == null) return null;
+    var dtH = (b[1] - a[2]) / 60;
+    if (!(dtH > 0)) return null;
+    var km = rb[2] - ra[2];
+    if (!(km > 0)) return null;
+    return Math.round(km / dtH);
+  }
+
+  function updateHdStats() {
+    var box = document.getElementById('hdstats');
+    if (!box || !TR) return;
+    var pu = 0, dv = 0;
+    var byLine = {}, byStation = {}, cand = [];
+    for (var no in TR) {
+      if (!Object.prototype.hasOwnProperty.call(TR, no)) continue;
+      var vs = TR[no] || [];
+      for (var vi = 0; vi < vs.length; vi++) {
+        var st = vs[vi] || [];
+        var cur = currentTimedSeg(no, vi, trainNow(no, vi));
+        if (!cur) continue;
+        if (cur.dwell) {
+          var s = st[cur.k];
+          var nm = s ? stName(s[0]) : '';
+          if (nm) byStation[nm] = (byStation[nm] || 0) + 1;
+        } else {
+          if ('GDC'.indexOf(String(no).charAt(0).toUpperCase()) >= 0) dv++; else pu++;
+          var tm = TM[no] && TM[no][vi] || [];
+          var seg = st[tm[cur.i] ? tm[cur.i][0] : -1];
+          var ln = seg && seg[1] != null ? pickLine(seg[1]) : '';
+          if (ln) byLine[ln] = (byLine[ln] || 0) + 1;
+          var sp = segAvgKmh(st, tm, cur.i);
+          if (sp != null) cand.push({ no: no, vi: vi, v: sp });
+        }
+        break;
+      }
+    }
+    /* 先按时刻表均速取前 40 名，再用速度曲线算瞬时速度，兼顾准确与开销 */
+    cand.sort(function (a, b) { return b.v - a.v; });
+    var fast = { no: '', v: -1 };
+    for (var ci = 0; ci < cand.length && ci < 40; ci++) {
+      var sp2 = liveSpeed(cand[ci].no, cand[ci].vi);
+      if (sp2 != null && isFinite(sp2) && sp2 > fast.v) fast = { no: cand[ci].no, v: Math.round(sp2) };
+    }
+    if (!fast.no && cand.length) fast = { no: cand[0].no, v: cand[0].v };
+    var tl = topCount(byLine), ts = topCount(byStation);
+    var stationTxt = ts.k && ts.k.charAt(ts.k.length - 1) !== '站' ? ts.k + '站' : ts.k;
+    box.innerHTML =
+      '当前运行中车车次：普速 <b>' + pu + '</b> · 动车 <b>' + dv + '</b><br>' +
+      '当前最快列车：<a href="#" data-stat-go="' + esc(fast.no) + '">' + esc(fast.no) + '</a>' +
+      (fast.v >= 0 ? ' <b>' + fast.v + ' km/h</b>' : '') + '<br>' +
+      '当前运行车辆最多线路：' + (tl.k ? '<a href="#" data-stat-go="' + esc(tl.k) + '">' + esc(tl.k) + '</a> <b>' + tl.v + '</b>' : '—') + '<br>' +
+      '当前停站车辆最多：' + (ts.k ? '<a href="#" data-stat-go="' + esc(ts.k) + '">' + esc(stationTxt) + '</a> <b>' + ts.v + '</b>' : '—');
+  }
+
   function runDot(no, tab) {
     return isRunning(no, tab) ? '<span class="run-dot" title="运行中"></span>' : '';
   }
@@ -3020,7 +3086,7 @@
     var h = '<ul class="res">' + filtered.slice(0, MAX_LIST).map(function (x) {
       var v = TR[x.no][0];
       return '<li><a href="#" data-k="' + esc(x.no) + '"><b>' + runDot(x.no) + esc(x.no) + '</b>' +
-        rtSpan(stName(v[0][0]), stName(v[v.length - 1][0]), no, 0) +
+        rtSpan(stName(v[0][0]), stName(v[v.length - 1][0]), x.no, 0) +
         liveSpan(x.no, 0) +
         '<span class="rm">经 ' + x.n + ' 站</span></a></li>';
     }).join('') + '</ul>';
@@ -3367,6 +3433,16 @@
     if (out.__listRender) out.__listRender();
   });
 
+  var hdStats = document.getElementById('hdstats');
+  if (hdStats) {
+    hdStats.addEventListener('click', function (e) {
+      var a = e.target.closest && e.target.closest('a[data-stat-go]');
+      if (!a) return;
+      e.preventDefault();
+      go(a.getAttribute('data-stat-go'));
+    });
+  }
+
   document.addEventListener('click', function (e) {
     if (!ac.contains(e.target) && e.target !== q) hideAc();
     /* 浮窗：点外面关掉（触发浮窗的元素自己会重新打开，交给 out 的处理器） */
@@ -3401,6 +3477,12 @@
   ft.innerHTML = '构建于 ' + esc(D.built);
 
   syncFromHash();
+  updateHdStats();
+  if (typeof setInterval === 'function') {
+    setInterval(updateHdStats, 5000);
+    /* 后台补线路几何，让「当前最快列车」用瞬时速度而不是时刻表均速 */
+    setTimeout(function () { loadRail(updateHdStats); }, 1500);
+  }
 
   /* 附加信息（车站档案 / 车底）后台加载：不挡首屏，浮窗和拼音搜索都靠它 */
   loadMeta(function () {

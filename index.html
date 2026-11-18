@@ -25,6 +25,16 @@
   .hd .hits{display:inline-block;line-height:0;margin-bottom:8px}
   .hd .hits img{display:block;height:20px;width:auto}
   .hd .sub{margin:4px 0 16px;color:var(--muted);font-size:13px}
+  .hdrow{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}
+  .hdmain{min-width:0}
+  .hdstats{
+    flex:0 0 auto;text-align:right;
+    font-size:12px;line-height:1.75;color:var(--muted);
+    padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);
+  }
+  .hdstats b{color:var(--text);font-weight:600}
+  .hdstats a{color:var(--accent);text-decoration:none}
+  .hdstats a:hover{text-decoration:underline}
   .box{position:relative;display:flex;gap:8px}
   .box input{
     flex:1;min-width:0;height:44px;padding:0 14px;font-size:16px;
@@ -457,6 +467,8 @@
   .facts b{color:var(--text);font-weight:600}
 
   @media (max-width:1000px){
+    .hdrow{display:block}
+    .hdstats{text-align:left;margin:0 0 10px;display:inline-block}
     .cols{grid-template-columns:1fr}
     .mapcol{
       order:-1;border-left:0;border-bottom:1px solid var(--line);
@@ -509,11 +521,16 @@
 
 <header class="hd">
   <div class="wrap">
-    <a class="hits" href="https://hits.sh/cr.xanyi.eu.org/" target="_blank" rel="noopener">
-      <img alt="Hits" src="https://hits.sh/cr.xanyi.eu.org.svg?label=CR&amp;color=2563eb">
-    </a>
-    <h1>列车经由查询</h1>
-    <p class="sub">输入车次、车站或线路，查看经由、线路与累计里程；也可以查「A 到 B」区间</p>
+    <div class="hdrow">
+      <div class="hdmain">
+        <a class="hits" href="https://hits.sh/cr.xanyi.eu.org/" target="_blank" rel="noopener">
+          <img alt="Hits" src="https://hits.sh/cr.xanyi.eu.org.svg?label=CR&amp;color=2563eb">
+        </a>
+        <h1>列车经由查询</h1>
+        <p class="sub">输入车次、车站或线路，查看经由、线路与累计里程；也可以查「A 到 B」区间</p>
+      </div>
+      <div class="hdstats" id="hdstats"></div>
+    </div>
     <div class="box">
       <input id="q" type="search" placeholder="车次 / 站名 / 线路，如 D366、武汉、京广线"
              autocomplete="off" autocapitalize="characters" spellcheck="false" enterkeyhint="search">
