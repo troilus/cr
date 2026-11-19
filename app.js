@@ -68,6 +68,20 @@
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
     });
   }
+  /* closest 的安全版：老浏览器可能没有 Element.closest，旧 Safari 点击文字时 target 是文本节点 */
+  function matchesSel(el, sel) {
+    var f = el.matches || el.msMatchesSelector || el.webkitMatchesSelector || el.mozMatchesSelector;
+    if (!f) return false;
+    try { return f.call(el, sel); } catch (err) { return false; }
+  }
+  function closestEl(node, sel) {
+    while (node && node.nodeType === 3) node = node.parentNode;
+    while (node && node.nodeType === 1) {
+      if (matchesSel(node, sel)) return node;
+      node = node.parentNode;
+    }
+    return null;
+  }
   function num(n) { return Number(n).toLocaleString('en-US'); }
   function stName(id) { return ST[id]; }
   function lnName(id) { return LN[id]; }
@@ -490,8 +504,8 @@
       '<div class="pop-bd"></div>';
     document.body.appendChild(pop);
     pop.addEventListener('click', function (e) {
-      if (e.target.closest('.pop-x')) { closePop(); return; }
-      var a = e.target.closest('a');
+      if (closestEl(e.target, '.pop-x')) { closePop(); return; }
+      var a = closestEl(e.target, 'a');
       if (!a) return;
       var p = a.getAttribute('data-pop');
       if (p) { e.preventDefault(); openPop(p, null); return; }
@@ -1682,7 +1696,7 @@
           delete existing[key];
         } else {
           trainLayer.insertAdjacentHTML('beforeend',
-            '<a href="#" data-pop="' + esc(key) + '">' +
+            '<a href="#" xlink:href="#" data-pop="' + esc(key) + '">' +
             '<g class="mp-train" transform="' + tf + '" style="transform:' + tf + '">' +
             '<path d="M0,' + (-tri).toFixed(1) + ' L' + (tri * 0.8).toFixed(1) + ',' + tri.toFixed(1) +
             ' L' + (-tri * 0.8).toFixed(1) + ',' + tri.toFixed(1) + ' Z" fill="' + col + '" stroke="#fff"' +
@@ -1835,8 +1849,7 @@
     }
     var drag = null, moved = false;
     svg.addEventListener('pointerdown', function (e) {
-      var hit = e.target.closest &&
-        e.target.closest('.mp-train, .mp-st, .mp-stl, [data-pop]');
+      var hit = closestEl(e.target, '.mp-train, .mp-st, .mp-stl, [data-pop]');
       if (hit) return;
       drag = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y };
       moved = false;
@@ -3248,7 +3261,7 @@
     var tb = out.querySelector('.tabs');
     if (tb) {
       tb.addEventListener('click', function (e) {
-        var b = e.target.closest('button');
+        var b = closestEl(e.target, 'button');
         if (!b) return;
         S.tab = +b.getAttribute('data-i');
         paint();
@@ -3753,32 +3766,32 @@
   });
 
   ac.addEventListener('mousedown', function (e) {
-    var li = e.target.closest('li');
+    var li = closestEl(e.target, 'li');
     if (li) { e.preventDefault(); go(li.getAttribute('data-i'), true); }
   });
 
   out.addEventListener('mouseover', function (e) {
-    var t = e.target.closest('[data-hl]');
+    var t = closestEl(e.target, '[data-hl]');
     if (t) hlLine(t.getAttribute('data-hl'));
-    var row = e.target.closest('.res li a[data-k]');
+    var row = closestEl(e.target, '.res li a[data-k]');
     if (row && !(e.relatedTarget && row.contains(e.relatedTarget))) {
       hlTrain(row.getAttribute('data-k'));
     }
   });
 
   out.addEventListener('mouseout', function (e) {
-    var t = e.target.closest('[data-hl]');
+    var t = closestEl(e.target, '[data-hl]');
     if (t && !(e.relatedTarget && t.contains(e.relatedTarget))) clearHl();
-    var row = e.target.closest('.res li a[data-k]');
+    var row = closestEl(e.target, '.res li a[data-k]');
     if (row && !(e.relatedTarget && row.contains(e.relatedTarget))) hlTrain('');
   });
 
   out.addEventListener('click', function (e) {
-    var mb = e.target.closest('[data-map]');
+    var mb = closestEl(e.target, '[data-map]');
     if (mb) { e.preventDefault(); toggleMap(); return; }
-    var pe = e.target.closest('[data-pop]');
+    var pe = closestEl(e.target, '[data-pop]');
     if (pe) { e.preventDefault(); openPop(pe.getAttribute('data-pop'), pe); return; }
-    var more = e.target.closest('[data-more]');
+    var more = closestEl(e.target, '[data-more]');
     if (more) {
       e.preventDefault();
       if (more.getAttribute('data-more') === 'all') LIST_LIMIT = Infinity;
@@ -3787,7 +3800,7 @@
       else paint();
       return;
     }
-    var a = e.target.closest('a');
+    var a = closestEl(e.target, 'a');
     if (!a) return;
     var k = a.getAttribute('data-k');
     if (k) {
@@ -3812,7 +3825,7 @@
     else if (f === 'dest') LIST_FILTER.dest = e.target.checked;
     else if (e.target.checked) LIST_FILTER.types[f] = 1;
     else delete LIST_FILTER.types[f];
-    var lab = e.target.closest('.fopt');
+    var lab = closestEl(e.target, '.fopt');
     if (lab) lab.classList.toggle('on', e.target.checked);
     if (out.__listRender) out.__listRender();
   });
@@ -3820,7 +3833,7 @@
   var hdStats = document.getElementById('hdstats');
   if (hdStats) {
     hdStats.addEventListener('click', function (e) {
-      var a = e.target.closest && e.target.closest('a[data-stat-go]');
+      var a = closestEl(e.target, 'a[data-stat-go]');
       if (!a) return;
       e.preventDefault();
       go(a.getAttribute('data-stat-go'));
@@ -3830,18 +3843,23 @@
   var qhBox = document.getElementById('qhist');
   if (qhBox) {
     qhBox.addEventListener('click', function (e) {
-      var a = e.target.closest && e.target.closest('a[data-qh]');
+      var a = closestEl(e.target, 'a[data-qh]');
       if (!a) return;
       e.preventDefault();
       go(a.getAttribute('data-qh'), true);
     });
   }
 
+  /* 兜底：所有 a[href="#"] 都是 JS 驱动的，即使某个 handler 抛错也不让 hash 被清空、页面跳顶 */
+  document.addEventListener('click', function (e) {
+    if (closestEl(e.target, 'a[href="#"]')) e.preventDefault();
+  }, true);
+
   document.addEventListener('click', function (e) {
     if (!ac.contains(e.target) && e.target !== q) hideAc();
     /* 浮窗：点外面关掉（触发浮窗的元素自己会重新打开，交给 out 的处理器） */
     if (pop && !pop.hidden && !pop.contains(e.target) &&
-        !(e.target.closest && e.target.closest('[data-pop]'))) closePop();
+        !closestEl(e.target, '[data-pop]')) closePop();
   });
 
   document.addEventListener('keydown', function (e) {
@@ -3849,7 +3867,7 @@
   });
 
   window.addEventListener('scroll', function (e) {
-    if (pop && !pop.hidden && !(e.target && e.target.closest && e.target.closest('.pop'))) closePop();
+    if (pop && !pop.hidden && !closestEl(e.target, '.pop')) closePop();
   }, true);
 
   window.addEventListener('resize', closePop);
