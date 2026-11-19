@@ -2895,67 +2895,31 @@
     ]);
   }
 
-  /* 顶部统计条：固定 6 个槽位 + 两份副本横向循环滚动，5 秒刷新只改文字不重建 DOM */
+  /* 顶部统计条：固定 6 个槽位，一行放不下自动换行；5 秒刷新只改文字不重建 DOM */
   var HD_LABELS = [
-    '当前运行中车车次：', '当前最快列车：', '当前运行车辆最多线路：',
-    '当前停站车辆最多：', '当前运行时间最长：', '当前运行里程最长：'
+    '运行中车次：', '最快列车：', '车辆最多线路：',
+    '停站车辆最多：', '运行时间最长：', '运行里程最长：'
   ];
-  var HD_SETS = null;
+  var HD_ITEMS = null;
 
   function hdInit() {
     var box = document.getElementById('hdstats');
     if (!box || !box.querySelectorAll) return null;
-    var html = '<div class="hdtrack">';
-    for (var c = 0; c < 2; c++) {
-      html += '<span class="hdset"' + (c ? ' aria-hidden="true"' : '') + '>';
-      for (var i = 0; i < HD_LABELS.length; i++) {
-        html += '<span class="hdi"><span class="k">' + HD_LABELS[i] + '</span><span class="v"></span></span>';
-      }
-      html += '</span>';
+    var html = '';
+    for (var i = 0; i < HD_LABELS.length; i++) {
+      html += '<span class="hdi"><span class="k">' + HD_LABELS[i] + '</span><span class="v"></span></span>';
     }
-    box.innerHTML = html + '</div>';
-    HD_SETS = box.querySelectorAll('.hdset');
-    hdScroll(box);
+    box.innerHTML = html;
+    HD_ITEMS = box.querySelectorAll('.hdi .v');
     return box;
   }
 
   function hdRender(vals) {
-    if (!HD_SETS) hdInit();
-    if (!HD_SETS || !HD_SETS.length) return;
-    for (var c = 0; c < HD_SETS.length; c++) {
-      var set = HD_SETS[c], vs = set.querySelectorAll('.hdi .v');
-      for (var i = 0; i < vs.length && i < vals.length; i++) {
-        if (vs[i].innerHTML !== vals[i]) vs[i].innerHTML = vals[i];
-      }
-      if (c) {
-        var as = set.querySelectorAll('a');
-        for (var j = 0; j < as.length; j++) as[j].tabIndex = -1;
-      }
+    if (!HD_ITEMS) hdInit();
+    if (!HD_ITEMS || !HD_ITEMS.length) return;
+    for (var i = 0; i < HD_ITEMS.length && i < vals.length; i++) {
+      if (HD_ITEMS[i].innerHTML !== vals[i]) HD_ITEMS[i].innerHTML = vals[i];
     }
-  }
-
-  /* 缓慢横向滚动：到一半宽度回退一半形成无缝循环；悬停/按住暂停 */
-  function hdScroll(box) {
-    if (!box || box.__hdRun || !window.requestAnimationFrame) return;
-    box.__hdRun = true;
-    var paused = false, last = 0;
-    box.addEventListener('mouseenter', function () { paused = true; });
-    box.addEventListener('mouseleave', function () { paused = false; });
-    box.addEventListener('pointerdown', function () { paused = true; });
-    window.addEventListener('pointerup', function () { paused = false; });
-    function tick(t) {
-      if (!paused && !document.hidden) {
-        var half = box.scrollWidth / 2;
-        if (half > box.clientWidth + 4) {
-          if (!last) last = t;
-          box.scrollLeft += Math.min(64, t - last) * 0.022;
-          if (box.scrollLeft >= half) box.scrollLeft -= half;
-        }
-      }
-      last = t;
-      window.requestAnimationFrame(tick);
-    }
-    window.requestAnimationFrame(tick);
   }
 
   /* 搜索历史：最近 12 条，去重，点击直接重搜 */

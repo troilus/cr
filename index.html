@@ -32,14 +32,11 @@
     background:var(--card);overflow:hidden;
   }
   .hdstats{
-    overflow-x:auto;overflow-y:hidden;white-space:nowrap;
+    display:flex;flex-wrap:wrap;align-items:center;
     font-size:12px;line-height:2;color:var(--muted);
-    padding:3px 0;scrollbar-width:none;-ms-overflow-style:none;
+    padding:3px 0;
   }
-  .hdstats::-webkit-scrollbar{display:none}
-  .hdtrack{display:inline-block;white-space:nowrap}
-  .hdset{display:inline-block}
-  .hdi{display:inline-block;padding:0 9px}
+  .hdi{display:inline-block;flex:0 0 auto;white-space:nowrap;padding:0 7px}
   .hdi::before{
     content:"";display:inline-block;width:5px;height:5px;margin-right:6px;
     border-radius:50%;background:#16a34a;vertical-align:1px;
@@ -513,6 +510,8 @@
 
   @media (max-width:560px){
     .hd{padding:20px 0 18px}
+    .hdstats{font-size:11px}
+    .hdi{flex:0 1 auto;white-space:normal;min-width:0;padding:0 6px}
     .head{padding:14px 14px 12px;gap:8px}
     .no{font-size:19px}
     .meta{margin-left:0;width:100%}
